@@ -1,0 +1,5 @@
+tags.json
+.env
+.venv/
+assets/
+tag_images/
