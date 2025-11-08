@@ -3,3 +3,5 @@ tags.json
 .venv/
 assets/
 tag_images/
+.idea/
+__pycache__/
