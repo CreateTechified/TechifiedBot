@@ -8,9 +8,8 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 
-bot = bridge.Bot(command_prefix="!", intents=intents)
+bot = bridge.Bot(command_prefix="!", intents=intents, auto_sync_commands=True)
 presence = discord.Game("modpack release soon??")
-bot.auto_sync_commands = True
 
 @bot.event
 async def on_ready():
@@ -21,8 +20,5 @@ async def on_ready():
 async def ping(ctx):
     await ctx.respond("Pong!", ephemeral=False)
 
-# Register extensions within these comments! Below is code to unbreak it.
 bot.load_extension("tag")
-# Register extensions within these comments! Below is code to unbreak it.
-bot.sync_commands()
 bot.run(os.getenv("TOKEN"))
