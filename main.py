@@ -1,5 +1,5 @@
 import discord
-from discord.ext import bridge
+from discord.ext import commands
 import os
 from dotenv import load_dotenv
 
@@ -8,7 +8,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 
-bot = bridge.Bot(command_prefix="!", intents=intents, auto_sync_commands=True)
+bot = commands.Bot(command_prefix=".", intents=intents, auto_sync_commands=True)
 presence = discord.Game("modpack release soon??")
 
 @bot.event
@@ -16,9 +16,8 @@ async def on_ready():
     print(f"✅ Logged in as {bot.user} ({bot.user.id})")
     await bot.change_presence(status=discord.Status.online, activity=presence)
 
-@bot.bridge_command()
+@bot.command()
 async def ping(ctx):
-    await ctx.respond("Pong!", ephemeral=False)
+    await ctx.send("Pong!")
 
-bot.load_extension("tag")
 bot.run(os.getenv("TOKEN"))
