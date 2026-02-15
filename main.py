@@ -1,7 +1,8 @@
+import asyncio
+asyncio.set_event_loop(asyncio.new_event_loop())
 import discord
 from discord.ext import commands
 import os
-import asyncio
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -10,13 +11,9 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 
-loop = asyncio.new_event_loop()
-asyncio.set_event_loop(loop)
-
 bot = commands.Bot(
     command_prefix=".",
     intents=intents,
-    loop=loop,
     auto_sync_commands=True
 )
 
@@ -33,16 +30,11 @@ async def ping(ctx):
 
 async def main():
     async with bot:
+        bot.load_extension('help_cog')
         token = os.getenv("TOKEN")
         if not token:
             print("❌ ERROR: No TOKEN found in .env file!")
             return
         await bot.start(token)
 
-if __name__ == "__main__":
-    try:
-        loop.run_until_complete(main())
-    except KeyboardInterrupt:
-        loop.run_until_complete(bot.close())
-    finally:
-        loop.close()
+asyncio.run(main())
