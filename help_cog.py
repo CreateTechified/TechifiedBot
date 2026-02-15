@@ -135,8 +135,19 @@ class CommunityHelp(commands.Cog):
             return
 
         if ctx.author.guild_permissions.manage_messages or ctx.channel.owner_id == ctx.author.id:
+            try:
+                starter_message = await ctx.channel.parent.fetch_message(ctx.channel.id)
+                await starter_message.delete()
+            except discord.NotFound:
+                pass
+            except discord.Forbidden:
+                print("Bot lacks permission to delete the embed message.")
+            except discord.HTTPException as e:
+                print(f"Failed to delete embed: {e}")
+
             new_name = ctx.channel.name.replace("❓", "✅")
-            await ctx.send("✅ **Issue resolved. This thread will be deleted in 7 days.**")
+            await ctx.send(
+                "✅ **Issue resolved. The main embed has been removed. This thread will be deleted in 7 days.**")
             await ctx.channel.edit(name=new_name, archived=True, locked=True)
 
 # LEAVE THIS NON-ASYNC! IT CRASHES!!!

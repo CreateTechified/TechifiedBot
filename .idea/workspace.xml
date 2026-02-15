@@ -4,11 +4,7 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="899dd533-aa08-430a-9be4-fa0a154a22ee" name="Changes" comment="it was complaining">
-      <change afterPath="$PROJECT_DIR$/help_cog.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
-    </list>
+    <list default="true" id="899dd533-aa08-430a-9be4-fa0a154a22ee" name="Changes" comment="Add the help cog" />
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -88,7 +84,15 @@
       <option name="project" value="LOCAL" />
       <updated>1771164310707</updated>
     </task>
-    <option name="localTasksCounter" value="4" />
+    <task id="LOCAL-00004" summary="Add the help cog">
+      <option name="closed" value="true" />
+      <created>1771177839310</created>
+      <option name="number" value="00004" />
+      <option name="presentableId" value="LOCAL-00004" />
+      <option name="project" value="LOCAL" />
+      <updated>1771177839310</updated>
+    </task>
+    <option name="localTasksCounter" value="5" />
     <servers />
   </component>
   <component name="Vcs.Log.Tabs.Properties">
@@ -106,6 +110,7 @@
     <MESSAGE value="the commit ever" />
     <MESSAGE value="do things??" />
     <MESSAGE value="it was complaining" />
-    <option name="LAST_COMMIT_MESSAGE" value="it was complaining" />
+    <MESSAGE value="Add the help cog" />
+    <option name="LAST_COMMIT_MESSAGE" value="Add the help cog" />
   </component>
 </project>
