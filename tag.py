@@ -65,12 +65,18 @@ class TagCog(commands.Cog):
         if not tag:
             return await ctx.respond("❌ Tag not found.")
 
-        # --- FIX: Check if file exists before sending ---
-        if not os.path.exists(tag["path"]):
-            # You might want to auto-delete this broken tag entry here
-            return await ctx.respond(f"❌ Tag `{tag_name}` found, but its image file is missing!")
+        content = tag.get("description", "")
+        tag_path = tag.get("path")
 
-        await ctx.respond(content=tag["description"], file=discord.File(tag["path"]))
+        if tag_path:
+            if not os.path.exists(tag_path):
+                return await ctx.respond(f"❌ Tag `{tag_name}` found, but its attachment file is missing!")
+            return await ctx.respond(content=content or None, file=discord.File(tag_path))
+
+        if content:
+            return await ctx.respond(content)
+
+        return await ctx.respond("🤷 This tag is empty.")
 
     # -----------------------------
     # View a tag: /t view <tagname>
@@ -112,20 +118,21 @@ class TagCog(commands.Cog):
             return await ctx.respond("❌ Tag already exists.")
 
         attachments = ctx.message.attachments if ctx.message else ctx.attachments
-        if not attachments:
-            return await ctx.respond("❌ You must attach an image.")
-
-        attachment = attachments[0]
-        if not attachment.filename.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")):
-            return await ctx.respond("❌ Invalid file type.")
-
-        # --- IMPROVEMENT: Cleaner file path ---
-        file_extension = os.path.splitext(attachment.filename)[1]
-        path = os.path.join(IMAGE_DIR, f"{name}{file_extension}")
-
-        await attachment.save(path)
-
         desc = sanitize_description(description)
+        path = None
+
+        if attachments:
+            attachment = attachments[0]
+            if not attachment.filename.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".txt", ".pdf")):
+                return await ctx.respond("❌ Invalid file type.")
+
+            file_extension = os.path.splitext(attachment.filename)[1]
+            path = os.path.join(IMAGE_DIR, f"{name}{file_extension}")
+            await attachment.save(path)
+
+        if not desc and not path:
+            return await ctx.respond("❌ Provide tag text, an attachment, or both.")
+
         self.tags[name] = {"path": path, "description": desc}
         save_tags(self.tags)
 
@@ -142,7 +149,7 @@ class TagCog(commands.Cog):
             return await ctx.respond("❌ Tag not found.")
 
         # Remove the image file
-        if os.path.exists(tag["path"]):
+        if tag.get("path") and os.path.exists(tag["path"]):
             os.remove(tag["path"])
 
         del self.tags[name]
