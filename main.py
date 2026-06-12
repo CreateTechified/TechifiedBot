@@ -31,7 +31,6 @@ async def ping(ctx):
 async def main():
     async with bot:
         bot.load_extension('help_cog')
-        bot.load_extension('tag')
         token = os.getenv("TOKEN")
         if not token:
             print("❌ ERROR: No TOKEN found in .env file!")
