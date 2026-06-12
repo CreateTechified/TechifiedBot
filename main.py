@@ -32,7 +32,7 @@ async def on_ready():
 async def ping(ctx):
     await ctx.send("Pong!")
 
-@bot.command(name="t add", description="Creates a new tag")
+@bot.command(name="createtag", description="Creates a new tag")
 async def create_tag(ctx: commands.Context, name: str, *, content: str):
     async with bot.db.cursor() as cursor:
         await cursor.execute("SELECT content FROM tags WHERE guilld = ? AND name = ?", (ctx.guild.id, name))
