@@ -5,3 +5,4 @@ assets/
 tag_images/
 .idea/
 __pycache__/
+tags.db

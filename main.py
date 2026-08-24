@@ -43,7 +43,7 @@ async def create_tag(ctx: commands.Context, name: str, *, content: str):
         if data:
             await ctx.send("❌ Tag already exists!")
 
-        await bot.db.commet()
+        await bot.db.commit()
 
 async def main():
     async with bot:
