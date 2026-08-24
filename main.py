@@ -35,7 +35,7 @@ async def ping(ctx):
 @bot.command(name="createtag", description="Creates a new tag")
 async def create_tag(ctx: commands.Context, name: str, *, content: str):
     async with bot.db.cursor() as cursor:
-        await cursor.execute("SELECT content FROM tags WHERE guilld = ? AND name = ?", (ctx.guild.id, name))
+        await cursor.execute("SELECT content FROM tags WHERE guild = ? AND name = ?", (ctx.guild.id, name))
         data = await cursor.fetchone()
         if data is None: 
             await cursor.execute("INSERT INTO tags (name, content, guild, creator) VALUES (?, ?, ?, ?)", (name, content, ctx.guild.id, ctx.author.id))
