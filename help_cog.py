@@ -3,7 +3,6 @@ from discord.ext import commands, tasks
 import re
 from datetime import datetime, timezone, timedelta
 
-
 class CommunityHelp(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
