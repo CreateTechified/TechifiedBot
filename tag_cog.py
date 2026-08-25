@@ -1,3 +1,4 @@
+import asyncio
 import discord
 from discord.ext import commands
 import aiosqlite
@@ -6,10 +7,10 @@ import os
 
 TAG_FILES_DIR = "tag_files"
 
-
 class TagSystem(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        asyncio.create_task(self.cog_load())
 
     async def cog_load(self):
         self.bot.tag_db = await aiosqlite.connect("tags.db")
