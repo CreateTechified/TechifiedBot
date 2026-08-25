@@ -37,7 +37,7 @@ class TagSystem(commands.Cog):
         ) as cursor:
             return await cursor.fetchone()
 
-    @commands.group(name="tag", invoke_without_command=True)
+    @commands.group(name="tag", invoke_without_command=True, aliases=["t"])
     async def tag(self, ctx, name: str = None):
         if name is None:
             await ctx.send(
