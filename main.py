@@ -32,10 +32,11 @@ async def main():
     async with bot:
         bot.load_extension('help_cog')
         bot.load_extension('tag_cog')
+        bot.load_extension('server_cog')
 
-        token = os.getenv("TOKEN")
+        token = os.getenv("DSC_TOKEN")
         if not token:
-            print("❌ ERROR: No TOKEN found in .env file!")
+            print("❌ ERROR: No DSC_TOKEN found in .env file!")
             return
         await bot.start(token)
 

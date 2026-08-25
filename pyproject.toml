@@ -12,7 +12,9 @@ dependencies = [
     "python-dotenv (==1.2.3)",
     "aiofiles (==25.1.0)",
     "audioop-lts (>=0.2.2,<0.3.0)",
-    "aiosqlite (==0.22.1)"
+    "aiosqlite (==0.22.1)",
+    "requests (>=2.34.2,<3.0.0)",
+    "uuid (>=1.30,<2.0)",
 ]
 
 
