@@ -94,7 +94,7 @@ class TagSystem(commands.Cog):
             )
             await self.bot.tag_db.commit()
 
-        await ctx.send(f"{name} Tag Added ✅")
+        await ctx.send(f"`{name}` Tag Added ✅")
 
     @tag.command(name="remove")
     async def tag_remove(self, ctx, name: str):
@@ -121,7 +121,7 @@ class TagSystem(commands.Cog):
         )
         await self.bot.tag_db.commit()
 
-        await ctx.send(f"{name} Tag Removed ✅")
+        await ctx.send(f"`{name}` Tag Removed ✅")
 
     @tag.command(name="list")
     async def tag_list(self, ctx, member: discord.Member = None):

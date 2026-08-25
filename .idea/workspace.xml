@@ -4,10 +4,9 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="899dd533-aa08-430a-9be4-fa0a154a22ee" name="Changes" comment="aaaaaaa">
-      <change beforePath="$PROJECT_DIR$/.idea/vcs.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/vcs.xml" afterDir="false" />
+    <list default="true" id="899dd533-aa08-430a-9be4-fa0a154a22ee" name="Changes" comment="hopefully should fix everything">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tag_cog.py" beforeDir="false" afterPath="$PROJECT_DIR$/tag_cog.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -22,6 +21,12 @@
     </option>
   </component>
   <component name="Git.Settings">
+    <option name="PUSH_TAGS">
+      <GitPushTagMode>
+        <option name="argument" value="--follow-tags" />
+        <option name="title" value="Current Branch" />
+      </GitPushTagMode>
+    </option>
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
     <option name="UPDATE_TYPE" value="REBASE" />
   </component>
@@ -41,10 +46,72 @@
     <commands />
     <urls />
   </component>
+  <component name="NextEditCompletionFeaturesState">
+    <decayedCancelled>
+      <entry key="MS100" value="1.0096856782165415" />
+      <entry key="MS500" value="1.4958273728716398" />
+      <entry key="S2" value="3.6549707554899644" />
+      <entry key="S5" value="5.612063570737625" />
+      <entry key="S10" value="6.654493029349678" />
+      <entry key="S30" value="7.512304035844469" />
+      <entry key="S60" value="7.7508586552835235" />
+      <entry key="M2" value="7.874074349379968" />
+      <entry key="M5" value="7.9493004030474514" />
+      <entry key="M10" value="7.974594962989667" />
+      <entry key="M15" value="7.983051007430672" />
+      <entry key="M30" value="7.991519346587303" />
+      <entry key="H1" value="7.995758132789082" />
+      <entry key="H2" value="7.997878681115466" />
+      <entry key="H4" value="7.99893924421884" />
+      <entry key="D1" value="7.999823193987782" />
+      <entry key="W1" value="7.999974741670512" />
+    </decayedCancelled>
+    <decayedSelected>
+      <entry key="MS100" value="0.0" />
+      <entry key="MS500" value="0.0" />
+      <entry key="S2" value="0.0" />
+      <entry key="S5" value="0.0" />
+      <entry key="S10" value="0.0" />
+      <entry key="S30" value="0.0" />
+      <entry key="S60" value="0.0" />
+      <entry key="M2" value="0.0" />
+      <entry key="M5" value="0.0" />
+      <entry key="M10" value="0.0" />
+      <entry key="M15" value="0.0" />
+      <entry key="M30" value="0.0" />
+      <entry key="H1" value="0.0" />
+      <entry key="H2" value="0.0" />
+      <entry key="H4" value="0.0" />
+      <entry key="D1" value="0.0" />
+      <entry key="W1" value="0.0" />
+    </decayedSelected>
+    <decayedShown>
+      <entry key="MS100" value="0.9488138698280766" />
+      <entry key="MS500" value="1.4790858406863163" />
+      <entry key="S2" value="3.6388224897788137" />
+      <entry key="S5" value="5.598328214247886" />
+      <entry key="S10" value="6.645349440272203" />
+      <entry key="S30" value="7.50858728685377" />
+      <entry key="S60" value="7.7489041161741685" />
+      <entry key="M2" value="7.873071992844943" />
+      <entry key="M5" value="7.948893300939906" />
+      <entry key="M10" value="7.974390373598487" />
+      <entry key="M15" value="7.9829143828834574" />
+      <entry key="M30" value="7.991450918283572" />
+      <entry key="H1" value="7.995723889588325" />
+      <entry key="H2" value="7.997861552247687" />
+      <entry key="H4" value="7.998930677967454" />
+      <entry key="D1" value="7.999821766026733" />
+      <entry key="W1" value="7.9999745376698925" />
+    </decayedShown>
+  </component>
   <component name="ProjectColorInfo">{
   &quot;associatedIndex&quot;: 1
 }</component>
   <component name="ProjectId" id="35AeZ44l5dL61PYEbmyy5TG70rP" />
+  <component name="ProjectLevelVcsManager">
+    <ConfirmationsSetting value="2" id="Add" />
+  </component>
   <component name="ProjectViewState">
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
@@ -127,7 +194,15 @@
       <option name="project" value="LOCAL" />
       <updated>1787586853505</updated>
     </task>
-    <option name="localTasksCounter" value="8" />
+    <task id="LOCAL-00008" summary="hopefully should fix everything">
+      <option name="closed" value="true" />
+      <created>1787655630089</created>
+      <option name="number" value="00008" />
+      <option name="presentableId" value="LOCAL-00008" />
+      <option name="project" value="LOCAL" />
+      <updated>1787655630089</updated>
+    </task>
+    <option name="localTasksCounter" value="9" />
     <servers />
   </component>
   <component name="Vcs.Log.Tabs.Properties">
@@ -149,6 +224,7 @@
     <MESSAGE value="Delete the embed too" />
     <MESSAGE value="Fix some stuff" />
     <MESSAGE value="aaaaaaa" />
-    <option name="LAST_COMMIT_MESSAGE" value="aaaaaaa" />
+    <MESSAGE value="hopefully should fix everything" />
+    <option name="LAST_COMMIT_MESSAGE" value="hopefully should fix everything" />
   </component>
 </project>
