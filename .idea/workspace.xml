@@ -4,7 +4,9 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="899dd533-aa08-430a-9be4-fa0a154a22ee" name="Changes" comment="pine is dum">
+    <list default="true" id="899dd533-aa08-430a-9be4-fa0a154a22ee" name="Changes" comment="will this work? idk">
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/tag_cog.py" beforeDir="false" afterPath="$PROJECT_DIR$/tag_cog.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
@@ -209,7 +211,15 @@
       <option name="project" value="LOCAL" />
       <updated>1787658861672</updated>
     </task>
-    <option name="localTasksCounter" value="10" />
+    <task id="LOCAL-00010" summary="will this work? idk">
+      <option name="closed" value="true" />
+      <created>1787659356914</created>
+      <option name="number" value="00010" />
+      <option name="presentableId" value="LOCAL-00010" />
+      <option name="project" value="LOCAL" />
+      <updated>1787659356914</updated>
+    </task>
+    <option name="localTasksCounter" value="11" />
     <servers />
   </component>
   <component name="Vcs.Log.Tabs.Properties">
@@ -233,6 +243,7 @@
     <MESSAGE value="aaaaaaa" />
     <MESSAGE value="hopefully should fix everything" />
     <MESSAGE value="pine is dum" />
-    <option name="LAST_COMMIT_MESSAGE" value="pine is dum" />
+    <MESSAGE value="will this work? idk" />
+    <option name="LAST_COMMIT_MESSAGE" value="will this work? idk" />
   </component>
 </project>

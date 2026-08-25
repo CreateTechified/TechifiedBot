@@ -64,7 +64,7 @@ class TagSystem(commands.Cog):
     async def tag_add(self, ctx, name: str, *, content: str = None):
         existing = await self.get_tag(ctx.guild.id, name)
         if existing is not None:
-            await ctx.send(f"`{name}` Tag already exists ❌")
+            await ctx.send(f"❌ Tag `{name}` already exists")
             return
 
         if not content and not ctx.message.attachments:
@@ -95,7 +95,7 @@ class TagSystem(commands.Cog):
             )
             await self.bot.tag_db.commit()
 
-        await ctx.send(f"`{name}` Tag Added ✅")
+        await ctx.send(f"✅ Tag `{name}` added.")
 
     @tag.command(name="remove")
     async def tag_remove(self, ctx, name: str):
@@ -122,7 +122,7 @@ class TagSystem(commands.Cog):
         )
         await self.bot.tag_db.commit()
 
-        await ctx.send(f"`{name}` Tag Removed ✅")
+        await ctx.send(f"✅ Tag `{name}` removed.")
 
     @tag.command(name="list")
     async def tag_list(self, ctx, member: discord.Member = None):
