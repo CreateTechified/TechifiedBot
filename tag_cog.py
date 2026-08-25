@@ -64,7 +64,7 @@ class TagSystem(commands.Cog):
     async def tag_add(self, ctx, name: str, *, content: str = None):
         existing = await self.get_tag(ctx.guild.id, name)
         if existing is not None:
-            await ctx.send(f"{name} Tag already exists ❌")
+            await ctx.send(f"`{name}` Tag already exists ❌")
             return
 
         if not content and not ctx.message.attachments:
