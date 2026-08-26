@@ -35,7 +35,7 @@ async def ping(ctx):
 async def neofetch(ctx):
     try:
         process = await asyncio.create_subprocess_exec(
-            "fastfetch",
+            "fastfetch", "--pipe", "false",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -45,12 +45,11 @@ async def neofetch(ctx):
                 f"Error:\n```\n{stderr.decode().strip() or 'Unknown error'}\n```"
             )
             return
-
         output = stdout.decode("utf-8", errors="replace").strip()
+        output = re.sub(r"\x1b\[m", "\x1b[0m", output)
         if len(output) > 1900:
             output = output[:1900] + "\n... [Truncated]"
         await ctx.send(f"```ansi\n{output}\n```")
-
     except FileNotFoundError:
         await ctx.send("Error: `fastfetch` is not installed or in PATH.")
 
