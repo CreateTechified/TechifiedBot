@@ -1,4 +1,3 @@
-import asyncio
 import discord
 from discord.ext import commands
 import aiosqlite
@@ -6,11 +5,12 @@ import json
 import os
 
 TAG_FILES_DIR = "tag_files"
+MAX_USER_STORAGE_BYTES = 50 * 1024 * 1024  # i think this should translate to 50 MB..?
+
 
 class TagSystem(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        asyncio.create_task(self.cog_load())
 
     async def cog_load(self):
         self.bot.tag_db = await aiosqlite.connect("tags.db")
@@ -20,7 +20,24 @@ class TagSystem(commands.Cog):
                 name TEXT NOT NULL,
                 content TEXT,
                 attachments TEXT,
+                attachments_size INTEGER NOT NULL DEFAULT 0,
                 guild INTEGER NOT NULL,
+                creator INTEGER NOT NULL,
+                UNIQUE(name, guild)
+            )"""
+        )
+        try:
+            await self.bot.tag_db.execute(
+                "ALTER TABLE tags ADD COLUMN attachments_size INTEGER NOT NULL DEFAULT 0"
+            )
+        except aiosqlite.OperationalError:
+            pass
+
+        await self.bot.tag_db.execute(
+            """CREATE TABLE IF NOT EXISTS tag_aliases (
+                name TEXT NOT NULL,
+                guild INTEGER NOT NULL,
+                original_name TEXT NOT NULL,
                 creator INTEGER NOT NULL,
                 UNIQUE(name, guild)
             )"""
@@ -30,19 +47,65 @@ class TagSystem(commands.Cog):
     def cog_unload(self):
         self.bot.loop.create_task(self.bot.tag_db.close())
 
-    async def get_tag(self, guild_id: int, name: str):
+    # ---------- lookups ----------
+
+    async def get_tag_direct(self, guild_id: int, name: str):
+        """Looks up a real tag row only (does not resolve aliases)."""
         async with self.bot.tag_db.execute(
-            "SELECT id, content, attachments FROM tags WHERE guild = ? AND name = ?",
+            "SELECT id, content, attachments, creator, attachments_size FROM tags WHERE guild = ? AND name = ?",
             (guild_id, name)
         ) as cursor:
             return await cursor.fetchone()
+
+    async def get_alias(self, guild_id: int, name: str):
+        async with self.bot.tag_db.execute(
+            "SELECT original_name FROM tag_aliases WHERE guild = ? AND name = ?",
+            (guild_id, name)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else None
+
+    async def get_tag(self, guild_id: int, name: str):
+        """Resolves aliases transparently. Use this for viewing a tag."""
+        row = await self.get_tag_direct(guild_id, name)
+        if row is not None:
+            return row
+        original_name = await self.get_alias(guild_id, name)
+        if original_name is not None:
+            return await self.get_tag_direct(guild_id, original_name)
+        return None
+
+    async def name_taken(self, guild_id: int, name: str) -> bool:
+        """True if name is used by either a real tag or an alias."""
+        if await self.get_tag_direct(guild_id, name) is not None:
+            return True
+        if await self.get_alias(guild_id, name) is not None:
+            return True
+        return False
+
+    async def get_user_usage(self, guild_id: int, user_id: int) -> int:
+        async with self.bot.tag_db.execute(
+            "SELECT COALESCE(SUM(attachments_size), 0) FROM tags WHERE guild = ? AND creator = ?",
+            (guild_id, user_id)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else 0
+
+    @staticmethod
+    def _delete_files(attachments_json):
+        if attachments_json:
+            for path in json.loads(attachments_json):
+                if os.path.exists(path):
+                    os.remove(path)
+
+    # ---------- commands ----------
 
     @commands.group(name="tag", invoke_without_command=True, aliases=["t"])
     async def tag(self, ctx, name: str = None):
         if name is None:
             await ctx.send(
                 "Usage: `.tag <name>`, `.tag add <name> <content>`, `.tag remove <name>`, "
-                "`.tag list [@user]`, `.tag listall`"
+                "`.tag alias <original> <alias>`, `.tag list [@user]`, `.tag listall`, `.tag usage [@user]`"
             )
             return
 
@@ -51,7 +114,7 @@ class TagSystem(commands.Cog):
             await ctx.send(f"❌ Tag `{name}` doesn't exist.")
             return
 
-        _, content, attachments_json = row
+        _, content, attachments_json, _, _ = row
         files = []
         if attachments_json:
             for path in json.loads(attachments_json):
@@ -62,67 +125,115 @@ class TagSystem(commands.Cog):
 
     @tag.command(name="add")
     async def tag_add(self, ctx, name: str, *, content: str = None):
-        existing = await self.get_tag(ctx.guild.id, name)
-        if existing is not None:
+        if await self.name_taken(ctx.guild.id, name):
             await ctx.send(f"❌ Tag `{name}` already exists")
             return
 
-        if not content and not ctx.message.attachments:
+        attachments = ctx.message.attachments
+        if not content and not attachments:
             await ctx.send("❌ You need to provide text content and/or attach an image.")
             return
 
+        new_size = sum(a.size for a in attachments) if attachments else 0
+        if new_size:
+            current_usage = await self.get_user_usage(ctx.guild.id, ctx.author.id)
+            if current_usage + new_size > MAX_USER_STORAGE_BYTES:
+                remaining = MAX_USER_STORAGE_BYTES - current_usage
+                await ctx.send(
+                    f"❌ Storage limit exceeded. You have **{remaining / (1024 * 1024):.1f} MB** left "
+                    f"of your 50 MB limit, but these attachments total **{new_size / (1024 * 1024):.1f} MB**."
+                )
+                return
+
         cursor = await self.bot.tag_db.execute(
-            "INSERT INTO tags (name, content, attachments, guild, creator) VALUES (?, ?, ?, ?, ?)",
-            (name, content, None, ctx.guild.id, ctx.author.id)
+            "INSERT INTO tags (name, content, attachments, attachments_size, guild, creator) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (name, content, None, 0, ctx.guild.id, ctx.author.id)
         )
         await self.bot.tag_db.commit()
         tag_id = cursor.lastrowid
 
-        # Save attachments to disk if any
-        saved_paths = []
-        if ctx.message.attachments:
+        if attachments:
             guild_dir = os.path.join(TAG_FILES_DIR, str(ctx.guild.id))
             os.makedirs(guild_dir, exist_ok=True)
-            for i, attachment in enumerate(ctx.message.attachments):
+            saved_paths = []
+            for i, attachment in enumerate(attachments):
                 safe_filename = f"{tag_id}_{i}_{attachment.filename}"
                 path = os.path.join(guild_dir, safe_filename)
                 await attachment.save(path)
                 saved_paths.append(path)
 
             await self.bot.tag_db.execute(
-                "UPDATE tags SET attachments = ? WHERE id = ?",
-                (json.dumps(saved_paths), tag_id)
+                "UPDATE tags SET attachments = ?, attachments_size = ? WHERE id = ?",
+                (json.dumps(saved_paths), new_size, tag_id)
             )
             await self.bot.tag_db.commit()
 
         await ctx.send(f"✅ Tag `{name}` added.")
 
-    @tag.command(name="remove")
-    async def tag_remove(self, ctx, name: str):
-        row = await self.get_tag(ctx.guild.id, name)
-        if row is None:
-            await ctx.send(f"❌ Tag `{name}` doesn't exist.")
+    @tag.command(name="alias")
+    async def tag_alias(self, ctx, original: str, alias: str):
+        orig_row = await self.get_tag_direct(ctx.guild.id, original)
+        if orig_row is None:
+            if await self.get_alias(ctx.guild.id, original) is not None:
+                await ctx.send(f"❌ `{original}` is itself an alias — alias the original tag it points to instead.")
+            else:
+                await ctx.send(f"❌ Tag `{original}` doesn't exist.")
             return
 
-        tag_id, _, attachments_json = row
-
-        is_creator = await self._is_creator(ctx.guild.id, name, ctx.author.id)
-        if not (ctx.author.guild_permissions.manage_messages or is_creator):
-            await ctx.send("❌ You don't have permission to remove this tag.")
+        if await self.name_taken(ctx.guild.id, alias):
+            await ctx.send(f"❌ Tag `{alias}` already exists")
             return
-
-        # Delete stored files
-        if attachments_json:
-            for path in json.loads(attachments_json):
-                if os.path.exists(path):
-                    os.remove(path)
 
         await self.bot.tag_db.execute(
-            "DELETE FROM tags WHERE guild = ? AND name = ?", (ctx.guild.id, name)
+            "INSERT INTO tag_aliases (name, guild, original_name, creator) VALUES (?, ?, ?, ?)",
+            (alias, ctx.guild.id, original, ctx.author.id)
         )
         await self.bot.tag_db.commit()
 
-        await ctx.send(f"✅ Tag `{name}` removed.")
+        await ctx.send(f"✅ `{alias}` is now an alias for `{original}`.")
+
+    @tag.command(name="remove")
+    async def tag_remove(self, ctx, name: str):
+        direct_row = await self.get_tag_direct(ctx.guild.id, name)
+        if direct_row is not None:
+            _, _, attachments_json, creator_id, _ = direct_row
+            is_creator = ctx.author.id == creator_id
+            if not (ctx.author.guild_permissions.manage_messages or is_creator):
+                await ctx.send("❌ You don't have permission to remove this tag.")
+                return
+
+            self._delete_files(attachments_json)
+            await self.bot.tag_db.execute(
+                "DELETE FROM tags WHERE guild = ? AND name = ?", (ctx.guild.id, name)
+            )
+            await self.bot.tag_db.execute(
+                "DELETE FROM tag_aliases WHERE guild = ? AND original_name = ?", (ctx.guild.id, name)
+            )
+            await self.bot.tag_db.commit()
+            await ctx.send(f"✅ Tag `{name}` removed.")
+            return
+
+        original_name = await self.get_alias(ctx.guild.id, name)
+        if original_name is not None:
+            async with self.bot.tag_db.execute(
+                "SELECT creator FROM tag_aliases WHERE guild = ? AND name = ?", (ctx.guild.id, name)
+            ) as cursor:
+                alias_row = await cursor.fetchone()
+            alias_creator = alias_row[0] if alias_row else None
+
+            if not (ctx.author.guild_permissions.manage_messages or ctx.author.id == alias_creator):
+                await ctx.send("❌ You don't have permission to remove this alias.")
+                return
+
+            await self.bot.tag_db.execute(
+                "DELETE FROM tag_aliases WHERE guild = ? AND name = ?", (ctx.guild.id, name)
+            )
+            await self.bot.tag_db.commit()
+            await ctx.send(f"✅ Alias `{name}` removed.")
+            return
+
+        await ctx.send(f"❌ Tag `{name}` doesn't exist.")
 
     @tag.command(name="list")
     async def tag_list(self, ctx, member: discord.Member = None):
@@ -169,12 +280,14 @@ class TagSystem(commands.Cog):
         embed.set_footer(text=f"{len(rows)} tag(s)")
         await ctx.send(embed=embed)
 
-    async def _is_creator(self, guild_id, name, user_id):
-        async with self.bot.tag_db.execute(
-            "SELECT creator FROM tags WHERE guild = ? AND name = ?", (guild_id, name)
-        ) as cursor:
-            row = await cursor.fetchone()
-            return row is not None and row[0] == user_id
+    @tag.command(name="usage")
+    async def tag_usage(self, ctx, member: discord.Member = None):
+        target = member or ctx.author
+        usage = await self.get_user_usage(ctx.guild.id, target.id)
+        used_mb = usage / (1024 * 1024)
+        limit_mb = MAX_USER_STORAGE_BYTES / (1024 * 1024)
+        who = "You have" if target == ctx.author else f"{target.display_name} has"
+        await ctx.send(f"📦 {who} used **{used_mb:.2f} MB** of the **{limit_mb:.0f} MB** tag storage limit.")
 
 
 def setup(bot):

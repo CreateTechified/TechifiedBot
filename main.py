@@ -33,6 +33,7 @@ async def main():
         bot.load_extension('help_cog')
         bot.load_extension('tag_cog')
         bot.load_extension('server_cog')
+        bot.load_extension('slash_cog')
 
         token = os.getenv("DSC_TOKEN")
         if not token:
