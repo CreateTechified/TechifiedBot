@@ -496,7 +496,7 @@ class SlashCommands(commands.Cog):
     @system_group.command(name="update", description="Updates packages on host system.")
     @is_admin()
     async def sys_update(self, ctx):
-        await ctx.defer(ephemeral=True, thinking=True)
+        await ctx.defer(ephemeral=True)
         try:
             process = await asyncio.create_subprocess_shell(
                 "apk update && apk upgrade",
