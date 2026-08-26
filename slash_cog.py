@@ -12,8 +12,8 @@ TAG_FILES_DIR = "tag_files"
 ADMIN_ROLE_ID = 1222456633511378965
 MODERATOR_ROLE_ID = 1421877616272605326
 OWNER_ROLE_ID = 1286650794053210122
-ALLOWED_ROLE_IDS = {ADMIN_ROLE_ID, MODERATOR_ROLE_ID, OWNER_ROLE_ID}
-
+STAFF_ROLE_IDS = {ADMIN_ROLE_ID, MODERATOR_ROLE_ID, OWNER_ROLE_ID}
+ADMIN_ROLE_IDS = {ADMIN_ROLE_ID, OWNER_ROLE_ID}
 
 def is_staff():
     async def predicate(ctx: discord.ApplicationContext) -> bool:
@@ -23,7 +23,7 @@ def is_staff():
             return False
 
         role_ids = {role.id for role in member.roles}
-        if role_ids & ALLOWED_ROLE_IDS:
+        if role_ids & STAFF_ROLE_IDS:
             return True
 
         await ctx.respond("❌ You don't have permission to use this command.", ephemeral=True)
@@ -31,6 +31,24 @@ def is_staff():
 
     return commands.check(predicate)
 
+def is_admin():
+    async def predicate(ctx: discord.ApplicationContext) -> bool:
+        member = ctx.author
+        if not isinstance(member, discord.Member):
+            await ctx.respond("❌ This command can only be used in a server.", ephemeral=True)
+            return False
+
+        if member.id == 1023288254671376424 or 872693345510637589:
+            return True
+
+        role_ids = {role.id for role in member.roles}
+        if role_ids & ADMIN_ROLE_IDS:
+            return True
+
+        await ctx.respond("❌ You don't have permission to use this command.", ephemeral=True)
+        return False
+
+    return commands.check(predicate)
 
 class SlashCommands(commands.Cog):
     def __init__(self, bot):
@@ -463,13 +481,47 @@ class SlashCommands(commands.Cog):
 
         await ctx.respond(f"🔨 {member.mention} has been banned. Reason: {reason}")
 
+    # ---------- system administration ----------
+    # Configured for Alpine Linux! May need to be changed for other environments.
+    # Is this a bad idea? Probably.
+
     system_group = SlashCommandGroup("systemctl", "System management (staff only)")
 
     @system_group.command(name="restart", description="Restart the bot's service.")
-    @is_staff()
+    @is_admin()
     async def bot_restart(self, ctx):
-        await ctx.respond("Attempting to restart the service...")
+        await ctx.respond("Attempting to restart the service...", ephemeral=True)
         await asyncio.create_subprocess_shell("rc-service techifiedbot restart")
+
+    @system_group.command(name="update", description="Updates packages on host system.")
+    @is_admin()
+    async def sys_update(self, ctx):
+        await ctx.defer(ephemeral=True, thinking=True)
+        try:
+            process = await asyncio.create_subprocess_shell(
+                "apk update && apk upgrade",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            stdout, _ = await process.communicate()
+            output = stdout.decode("utf-8", errors="replace").strip() or "No output."
+
+            if len(output) > 1900:
+                output = "...[truncated]\n" + output[-1900:]
+
+            status = "✅ Success" if process.returncode == 0 else f"⚠️ Exited with code {process.returncode}"
+            await ctx.respond(f"{status}\n```\n{output}\n```", ephemeral=True)
+
+        except FileNotFoundError:
+            await ctx.respond("Error: `apk` not found in PATH.", ephemeral=True)
+        except Exception as e:
+            await ctx.respond(f"Error: {e}", ephemeral=True)
+
+    @system_group.command(name="reboot", description="Restart the host system.")
+    @is_admin()
+    async def sys_reboot(self, ctx):
+        await ctx.respond("Restarting...", ephemeral=True)
+        await asyncio.create_subprocess_shell("reboot")
 
 def setup(bot):
     bot.add_cog(SlashCommands(bot))
