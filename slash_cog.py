@@ -157,6 +157,12 @@ class SlashCommands(commands.Cog):
             await ctx.respond("❌ You need to provide text content and/or attach an image.", ephemeral=True)
             return
 
+        for a in attachments:
+            if a.size > 10 * 1024*1024:
+                await ctx.respond("❌ Your files are too powerful! Or, atleast that's what Discord says. Use a link instead. Thanks!",
+                    ephemeral=True)
+                return
+
         new_size = sum(a.size for a in attachments) if attachments else 0
         if new_size:
             current_usage = await self.get_user_usage(ctx.guild.id, ctx.author.id)
