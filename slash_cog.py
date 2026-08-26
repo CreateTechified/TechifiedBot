@@ -1,3 +1,5 @@
+import asyncio
+
 import discord
 from discord.ext import commands
 from discord.commands import SlashCommandGroup, Option
@@ -461,6 +463,13 @@ class SlashCommands(commands.Cog):
 
         await ctx.respond(f"🔨 {member.mention} has been banned. Reason: {reason}")
 
+    system_group = SlashCommandGroup("systemctl", "System management (staff only)")
+
+    @system_group.command(name="restart", description="Restart the bot's service.")
+    @is_staff()
+    async def bot_restart(self, ctx):
+        await ctx.respond("Attempting to restart the service...")
+        await asyncio.create_subprocess_shell("rc-service techifiedbot restart")
 
 def setup(bot):
     bot.add_cog(SlashCommands(bot))
