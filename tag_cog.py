@@ -103,7 +103,7 @@ class TagSystem(commands.Cog):
         new_size = sum(a.size for a in attachments) if attachments else 0
         if new_size:
             current_usage = await self.get_user_usage(ctx.guild.id, ctx.author.id)
-            limit_mb = 5000 if ctx.author.has_permission.manage_guild else 50
+            limit_mb = 5000 if ctx.author.guild_permissions.manage_guild else 50
             if current_usage + new_size > limit_mb:
                 remaining = limit_mb - current_usage
                 await ctx.send(
@@ -252,7 +252,7 @@ class TagSystem(commands.Cog):
         target = member or ctx.author
         usage = await self.get_user_usage(ctx.guild.id, target.id)
         used_mb = usage / (1024 * 1024)
-        limit_mb = 5000 if ctx.author.has_permission.manage_guild else 50
+        limit_mb = 5000 if ctx.author.guild_permissions.manage_guild else 50
         who = "You have" if target == ctx.author else f"{target.display_name} has"
         await ctx.send(f"📦 {who} used **{used_mb:.2f} MB** of the **{limit_mb:.0f} MB** tag storage limit.")
 
