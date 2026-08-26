@@ -1,8 +1,8 @@
-tags.json
 .env
 .venv/
 assets/
 tag_images/
 .idea/
 __pycache__/
-tags.db
+*.db
+.idea/workspace.xml
