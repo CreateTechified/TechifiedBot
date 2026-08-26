@@ -1,6 +1,5 @@
 import discord
 from discord.ext import commands
-import aiosqlite
 import json
 import os
 
@@ -11,38 +10,6 @@ MAX_USER_STORAGE_BYTES = 50 * 1024 * 1024  # i think this should translate to 50
 class TagSystem(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-
-    async def cog_load(self):
-        self.bot.tag_db = await aiosqlite.connect("tags.db")
-        await self.bot.tag_db.execute(
-            """CREATE TABLE IF NOT EXISTS tags (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                content TEXT,
-                attachments TEXT,
-                attachments_size INTEGER NOT NULL DEFAULT 0,
-                guild INTEGER NOT NULL,
-                creator INTEGER NOT NULL,
-                UNIQUE(name, guild)
-            )"""
-        )
-        try:
-            await self.bot.tag_db.execute(
-                "ALTER TABLE tags ADD COLUMN attachments_size INTEGER NOT NULL DEFAULT 0"
-            )
-        except aiosqlite.OperationalError:
-            pass
-
-        await self.bot.tag_db.execute(
-            """CREATE TABLE IF NOT EXISTS tag_aliases (
-                name TEXT NOT NULL,
-                guild INTEGER NOT NULL,
-                original_name TEXT NOT NULL,
-                creator INTEGER NOT NULL,
-                UNIQUE(name, guild)
-            )"""
-        )
-        await self.bot.tag_db.commit()
 
     def cog_unload(self):
         self.bot.loop.create_task(self.bot.tag_db.close())
@@ -105,7 +72,8 @@ class TagSystem(commands.Cog):
         if name is None:
             await ctx.send(
                 "Usage: `.tag <name>`, `.tag add <name> <content>`, `.tag remove <name>`, "
-                "`.tag alias <original> <alias>`, `.tag list [@user]`, `.tag listall`, `.tag usage [@user]`"
+                "`.tag alias <original> <alias>`, `.tag list [@user]`, `.tag listall`, "
+                "`.tag usage [@user]` (alias: `.tag storage`)"
             )
             return
 
@@ -280,7 +248,7 @@ class TagSystem(commands.Cog):
         embed.set_footer(text=f"{len(rows)} tag(s)")
         await ctx.send(embed=embed)
 
-    @tag.command(name="usage")
+    @tag.command(name="usage", aliases=["storage"])
     async def tag_usage(self, ctx, member: discord.Member = None):
         target = member or ctx.author
         usage = await self.get_user_usage(ctx.guild.id, target.id)

@@ -35,19 +35,6 @@ class SlashCommands(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    async def cog_load(self):
-        await self.bot.tag_db.execute(
-            """CREATE TABLE IF NOT EXISTS warnings (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                guild INTEGER NOT NULL,
-                user_id INTEGER NOT NULL,
-                moderator_id INTEGER NOT NULL,
-                reason TEXT,
-                timestamp TEXT NOT NULL
-            )"""
-        )
-        await self.bot.tag_db.commit()
-
     # ---------- shared helpers (mirrors tag_cog.py) ----------
 
     async def get_tag_direct(self, guild_id: int, name: str):
@@ -136,9 +123,11 @@ class SlashCommands(commands.Cog):
     @tag_group.command(name="view", description="View a tag")
     @is_staff()
     async def tag_view(self, ctx, name: Option(str, "The tag name")):
+        await ctx.defer()
+
         row = await self.get_tag(ctx.guild.id, name)
         if row is None:
-            await ctx.respond(f"❌ Tag `{name}` doesn't exist.", ephemeral=True)
+            await ctx.respond(f"❌ Tag `{name}` doesn't exist.")
             return
 
         _, content, attachments_json, _, _ = row

@@ -3,6 +3,7 @@ asyncio.set_event_loop(asyncio.new_event_loop())
 import discord
 from discord.ext import commands
 import os
+import aiosqlite
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -28,8 +29,55 @@ async def on_ready():
 async def ping(ctx):
     await ctx.send("Pong!")
 
+async def setup_database(bot):
+    bot.tag_db = await aiosqlite.connect("tags.db")
+
+    await bot.tag_db.execute(
+        """CREATE TABLE IF NOT EXISTS tags (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            content TEXT,
+            attachments TEXT,
+            attachments_size INTEGER NOT NULL DEFAULT 0,
+            guild INTEGER NOT NULL,
+            creator INTEGER NOT NULL,
+            UNIQUE(name, guild)
+        )"""
+    )
+    try:
+        await bot.tag_db.execute(
+            "ALTER TABLE tags ADD COLUMN attachments_size INTEGER NOT NULL DEFAULT 0"
+        )
+    except aiosqlite.OperationalError:
+        pass
+
+    await bot.tag_db.execute(
+        """CREATE TABLE IF NOT EXISTS tag_aliases (
+            name TEXT NOT NULL,
+            guild INTEGER NOT NULL,
+            original_name TEXT NOT NULL,
+            creator INTEGER NOT NULL,
+            UNIQUE(name, guild)
+        )"""
+    )
+
+    await bot.tag_db.execute(
+        """CREATE TABLE IF NOT EXISTS warnings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guild INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            moderator_id INTEGER NOT NULL,
+            reason TEXT,
+            timestamp TEXT NOT NULL
+        )"""
+    )
+
+    await bot.tag_db.commit()
+
 async def main():
     async with bot:
+        await setup_database(bot)
+
         bot.load_extension('help_cog')
         bot.load_extension('tag_cog')
         bot.load_extension('server_cog')

@@ -61,7 +61,16 @@ class ServerManagement(commands.Cog):
         resp = await asyncio.to_thread(
             requests.get, "https://whitelistsync.com/api/whitelist", headers=self.headers
         )
-        whitelist = resp.json()
+        if resp.status_code != 200:
+            await ctx.respond(f"❌ WhitelistSync API returned an error (status {resp.status_code}).")
+            return
+
+        try:
+            whitelist = resp.json()
+        except ValueError:
+            await ctx.respond("❌ WhitelistSync returned an unexpected response. Check that WLS_TOKEN is set correctly.")
+            return
+
         usernames = [player["name"] for player in whitelist if "name" in player]
         names = ", ".join(f"`{player}`" for player in usernames) if usernames else "*No players whitelisted.*"
 
