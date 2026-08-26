@@ -1,4 +1,6 @@
 import asyncio
+import re
+
 asyncio.set_event_loop(asyncio.new_event_loop())
 import discord
 from discord.ext import commands
@@ -28,6 +30,30 @@ async def on_ready():
 @bot.command()
 async def ping(ctx):
     await ctx.send("Pong!")
+
+@bot.command()
+async def neofetch(ctx):
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "hyfetch",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await process.communicate()
+        if process.returncode != 0:
+            await ctx.send(
+                f"Error:\n```\n{stderr.decode().strip() or 'Unknown error'}\n```"
+            )
+            return
+
+        output = stdout.decode("utf-8", errors="replace").strip()
+        output = re.sub(r"\x1b\[38;[25];\d+(;\d+)*m", "", output)
+        if len(output) > 1900:
+            output = output[:1900] + "\n... [Truncated]"
+        await ctx.send(f"```ansi\n{output}\n```")
+
+    except FileNotFoundError:
+        await ctx.send("Error: `hyfetch` is not installed or in PATH.")
 
 async def setup_database(bot):
     bot.tag_db = await aiosqlite.connect("tags.db")
