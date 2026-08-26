@@ -318,8 +318,8 @@ class SlashCommands(commands.Cog):
             new_size = sum(a.size for a in attachments)
             current_usage = await self.get_user_usage(ctx.guild.id, creator_id)
             projected = current_usage - old_size + new_size
-            if projected > MAX_USER_STORAGE_BYTES:
-                remaining = MAX_USER_STORAGE_BYTES - (current_usage - old_size)
+            if projected > 50 * 1024*1024:
+                remaining = (50 * 1024*1024) - (current_usage - old_size)
                 await ctx.respond(
                     f"❌ This would exceed the tag creator's 50 MB storage limit. "
                     f"They have **{remaining / (1024 * 1024):.1f} MB** available for this tag, "
