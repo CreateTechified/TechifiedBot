@@ -35,7 +35,7 @@ async def ping(ctx):
 async def neofetch(ctx):
     try:
         process = await asyncio.create_subprocess_exec(
-            "hyfetch",
+            "fastfetch",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -47,13 +47,12 @@ async def neofetch(ctx):
             return
 
         output = stdout.decode("utf-8", errors="replace").strip()
-        output = re.sub(r"\x1b\[38;[25];\d+(;\d+)*m", "", output)
         if len(output) > 1900:
             output = output[:1900] + "\n... [Truncated]"
         await ctx.send(f"```ansi\n{output}\n```")
 
     except FileNotFoundError:
-        await ctx.send("Error: `hyfetch` is not installed or in PATH.")
+        await ctx.send("Error: `fastfetch` is not installed or in PATH.")
 
 async def setup_database(bot):
     bot.tag_db = await aiosqlite.connect("tags.db")
