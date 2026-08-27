@@ -12,6 +12,7 @@ from tag_cog import TagReportView
 
 TAG_FILES_DIR = "tag_files"
 TAG_REPORT_CHANNEL_ID = 1542180741092347954
+TAG_DELETE_NOTIFY_CHANNEL_ID = 1436518560964022363
 REPORTED_WARNING = "⚠️ **This Tag has been reported for potential rule violations**"
 
 ADMIN_ROLE_ID = 1222456633511378965
@@ -378,10 +379,14 @@ class SlashCommands(commands.Cog):
 
     @forcetag_group.command(name="remove", description="Force-remove any tag or alias, regardless of who created it")
     @is_staff()
-    async def forcetag_remove(self, ctx, name: Option(str, "The tag or alias name to remove")):
+    async def forcetag_remove(
+        self, ctx,
+        name: Option(str, "The tag or alias name to remove"),
+        reason: Option(str, "Reason for removal", required=False, default=None),
+    ):
         direct_row = await self.get_tag_direct(ctx.guild.id, name)
         if direct_row is not None:
-            _, _, attachments_json, _, _, _ = direct_row
+            _, _, attachments_json, creator_id, _, _ = direct_row
             self._delete_files(attachments_json)
 
             await self.bot.tag_db.execute(
@@ -392,6 +397,14 @@ class SlashCommands(commands.Cog):
             )
             await self.bot.tag_db.commit()
             await ctx.respond(f"`{name}` Tag Removed ✅")
+
+            notify_channel = self.bot.get_channel(TAG_DELETE_NOTIFY_CHANNEL_ID)
+            if notify_channel:
+                reason_text = reason or "No reason provided"
+                await notify_channel.send(
+                    f"🗑️ <@{creator_id}>, your tag `{name}` was removed by "
+                    f"{ctx.author.mention}.\n**Reason:** {reason_text}"
+                )
             return
 
         if await self.get_alias(ctx.guild.id, name) is not None:

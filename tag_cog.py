@@ -11,8 +11,69 @@ OWNER_ROLE_ID = 1286650794053210122
 ALLOWED_ROLE_IDS = {ADMIN_ROLE_ID, MODERATOR_ROLE_ID, OWNER_ROLE_ID}
 
 TAG_REPORT_CHANNEL_ID = 1542180741092347954
+TAG_DELETE_NOTIFY_CHANNEL_ID = 1436518560964022363
 
 REPORTED_WARNING = "⚠️ **This Tag has been reported for potential rule violations**"
+
+
+class ForceDeleteReasonModal(discord.ui.Modal):
+    def __init__(self, guild_id: int, tag_name: str, parent_view: "TagReportView"):
+        super().__init__(title="Force Delete Tag")
+        self.guild_id = guild_id
+        self.tag_name = tag_name
+        self.parent_view = parent_view
+        self.reason_input = discord.ui.InputText(
+            label="Reason for deletion",
+            style=discord.InputTextStyle.paragraph,
+            placeholder="Why is this tag being deleted?",
+            required=True,
+            max_length=500,
+        )
+        self.add_item(self.reason_input)
+
+    async def callback(self, interaction: discord.Interaction):
+        reason = self.reason_input.value
+        db = interaction.client.tag_db
+
+        async with db.execute(
+            "SELECT attachments, creator FROM tags WHERE guild = ? AND name = ?",
+            (self.guild_id, self.tag_name)
+        ) as cursor:
+            row = await cursor.fetchone()
+
+        if row is None:
+            await interaction.response.send_message(f"❌ Tag `{self.tag_name}` no longer exists.", ephemeral=True)
+            return
+
+        attachments_json, creator_id = row
+        if attachments_json:
+            for path in json.loads(attachments_json):
+                if os.path.exists(path):
+                    os.remove(path)
+
+        await db.execute("DELETE FROM tags WHERE guild = ? AND name = ?", (self.guild_id, self.tag_name))
+        await db.execute(
+            "DELETE FROM tag_aliases WHERE guild = ? AND original_name = ?", (self.guild_id, self.tag_name)
+        )
+        await db.commit()
+
+        for item in self.parent_view.children:
+            item.disabled = True
+
+        embed = interaction.message.embeds[0] if interaction.message.embeds else None
+        if embed:
+            embed.color = discord.Color.dark_grey()
+            embed.title = "🗑️ Tag Deleted"
+            embed.add_field(name="Deletion Reason", value=reason, inline=False)
+
+        await interaction.response.edit_message(embed=embed, view=self.parent_view)
+
+        notify_channel = interaction.client.get_channel(TAG_DELETE_NOTIFY_CHANNEL_ID)
+        if notify_channel:
+            await notify_channel.send(
+                f"🗑️ <@{creator_id}>, your tag `{self.tag_name}` was force-deleted by "
+                f"{interaction.user.mention}.\n**Reason:** {reason}"
+            )
 
 
 class TagReportView(discord.ui.View):
@@ -38,41 +99,8 @@ class TagReportView(discord.ui.View):
             await interaction.response.send_message("❌ You don't have permission to do that.", ephemeral=True)
             return
 
-        db = interaction.client.tag_db
-        async with db.execute(
-            "SELECT attachments FROM tags WHERE guild = ? AND name = ?",
-            (self.guild_id, self.tag_name)
-        ) as cursor:
-            row = await cursor.fetchone()
-
-        if row is None:
-            await interaction.response.send_message(f"❌ Tag `{self.tag_name}` no longer exists.", ephemeral=True)
-            return
-
-        attachments_json = row[0]
-        if attachments_json:
-            for path in json.loads(attachments_json):
-                if os.path.exists(path):
-                    os.remove(path)
-
-        await db.execute("DELETE FROM tags WHERE guild = ? AND name = ?", (self.guild_id, self.tag_name))
-        await db.execute(
-            "DELETE FROM tag_aliases WHERE guild = ? AND original_name = ?", (self.guild_id, self.tag_name)
-        )
-        await db.commit()
-
-        for item in self.children:
-            item.disabled = True
-
-        embed = interaction.message.embeds[0] if interaction.message.embeds else None
-        if embed:
-            embed.color = discord.Color.dark_grey()
-            embed.title = "🗑️ Tag Deleted"
-
-        await interaction.response.edit_message(embed=embed, view=self)
-        await interaction.followup.send(
-            f"🗑️ Tag `{self.tag_name}` has been force-deleted by {interaction.user.mention}."
-        )
+        modal = ForceDeleteReasonModal(self.guild_id, self.tag_name, self)
+        await interaction.response.send_modal(modal)
 
     @discord.ui.button(label="Clear Report", style=discord.ButtonStyle.success, custom_id="tagreport_clear")
     async def clear_report(self, button: discord.ui.Button, interaction: discord.Interaction):
