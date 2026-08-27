@@ -12,7 +12,7 @@ from tag_cog import TagReportView
 
 TAG_FILES_DIR = "tag_files"
 TAG_REPORT_CHANNEL_ID = 1542180741092347954
-REPORTED_WARNING = "⚠ **This Tag has been reported for potential rule violations**"
+REPORTED_WARNING = "⚠️ **This Tag has been reported for potential rule violations**"
 
 ADMIN_ROLE_ID = 1222456633511378965
 MODERATOR_ROLE_ID = 1421877616272605326

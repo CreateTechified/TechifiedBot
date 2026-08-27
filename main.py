@@ -1,5 +1,4 @@
 import asyncio
-import re
 
 asyncio.set_event_loop(asyncio.new_event_loop())
 import discord
