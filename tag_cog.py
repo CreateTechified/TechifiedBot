@@ -5,6 +5,97 @@ import os
 
 TAG_FILES_DIR = "tag_files"
 
+ADMIN_ROLE_ID = 1222456633511378965
+MODERATOR_ROLE_ID = 1421877616272605326
+OWNER_ROLE_ID = 1286650794053210122
+ALLOWED_ROLE_IDS = {ADMIN_ROLE_ID, MODERATOR_ROLE_ID, OWNER_ROLE_ID}
+
+REPORTED_WARNING = "⚠️ **This Tag has been reported for potential rule violations**"
+
+
+class TagReportView(discord.ui.View):
+
+    def __init__(self, guild_id: int, tag_name: str):
+        super().__init__(timeout=None)
+        self.guild_id = guild_id
+        self.tag_name = tag_name
+        self.force_delete.custom_id = f"tagreport_delete:{guild_id}:{tag_name}"
+        self.clear_report.custom_id = f"tagreport_clear:{guild_id}:{tag_name}"
+
+    @staticmethod
+    def _is_staff(interaction: discord.Interaction) -> bool:
+        member = interaction.user
+        if not isinstance(member, discord.Member):
+            return False
+        role_ids = {r.id for r in member.roles}
+        return bool(role_ids & ALLOWED_ROLE_IDS)
+
+    @discord.ui.button(label="Force Delete Tag", style=discord.ButtonStyle.danger, custom_id="tagreport_delete")
+    async def force_delete(self, button: discord.ui.Button, interaction: discord.Interaction):
+        if not self._is_staff(interaction):
+            await interaction.response.send_message("❌ You don't have permission to do that.", ephemeral=True)
+            return
+
+        db = interaction.client.tag_db
+        async with db.execute(
+            "SELECT attachments FROM tags WHERE guild = ? AND name = ?",
+            (self.guild_id, self.tag_name)
+        ) as cursor:
+            row = await cursor.fetchone()
+
+        if row is None:
+            await interaction.response.send_message(f"❌ Tag `{self.tag_name}` no longer exists.", ephemeral=True)
+            return
+
+        attachments_json = row[0]
+        if attachments_json:
+            for path in json.loads(attachments_json):
+                if os.path.exists(path):
+                    os.remove(path)
+
+        await db.execute("DELETE FROM tags WHERE guild = ? AND name = ?", (self.guild_id, self.tag_name))
+        await db.execute(
+            "DELETE FROM tag_aliases WHERE guild = ? AND original_name = ?", (self.guild_id, self.tag_name)
+        )
+        await db.commit()
+
+        for item in self.children:
+            item.disabled = True
+
+        embed = interaction.message.embeds[0] if interaction.message.embeds else None
+        if embed:
+            embed.color = discord.Color.dark_grey()
+            embed.title = "🗑️ Tag Deleted"
+
+        await interaction.response.edit_message(embed=embed, view=self)
+        await interaction.followup.send(
+            f"🗑️ Tag `{self.tag_name}` has been force-deleted by {interaction.user.mention}."
+        )
+
+    @discord.ui.button(label="Clear Report", style=discord.ButtonStyle.success, custom_id="tagreport_clear")
+    async def clear_report(self, button: discord.ui.Button, interaction: discord.Interaction):
+        if not self._is_staff(interaction):
+            await interaction.response.send_message("❌ You don't have permission to do that.", ephemeral=True)
+            return
+
+        db = interaction.client.tag_db
+        await db.execute(
+            "UPDATE tags SET reported = 0 WHERE guild = ? AND name = ?",
+            (self.guild_id, self.tag_name)
+        )
+        await db.commit()
+
+        for item in self.children:
+            item.disabled = True
+
+        embed = interaction.message.embeds[0] if interaction.message.embeds else None
+        if embed:
+            embed.color = discord.Color.green()
+            embed.title = "✅ Report Cleared"
+
+        await interaction.response.edit_message(embed=embed, view=self)
+
+
 class TagSystem(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -17,7 +108,8 @@ class TagSystem(commands.Cog):
     async def get_tag_direct(self, guild_id: int, name: str):
         """Looks up a real tag row only (does not resolve aliases)."""
         async with self.bot.tag_db.execute(
-            "SELECT id, content, attachments, creator, attachments_size FROM tags WHERE guild = ? AND name = ?",
+            "SELECT id, content, attachments, creator, attachments_size, reported "
+            "FROM tags WHERE guild = ? AND name = ?",
             (guild_id, name)
         ) as cursor:
             return await cursor.fetchone()
@@ -80,14 +172,18 @@ class TagSystem(commands.Cog):
             await ctx.send(f"❌ Tag `{name}` doesn't exist.")
             return
 
-        _, content, attachments_json, _, _ = row
+        _, content, attachments_json, _, _, reported = row
         files = []
         if attachments_json:
             for path in json.loads(attachments_json):
                 if os.path.exists(path):
                     files.append(discord.File(path))
 
-        await ctx.send(content=content or None, files=files if files else None)
+        display_content = content or None
+        if reported:
+            display_content = f"{REPORTED_WARNING}\n{display_content}" if display_content else REPORTED_WARNING
+
+        await ctx.send(content=display_content, files=files if files else None)
 
     @tag.command(name="add")
     async def tag_add(self, ctx, name: str, *, content: str = None):
@@ -101,7 +197,7 @@ class TagSystem(commands.Cog):
             return
 
         for a in attachments:
-            if a.size > 10 * 1024*1024:
+            if a.size > 10 * 1024 * 1024:
                 await ctx.send("❌ Your files are too powerful! Or, atleast that's what Discord says. Use a link instead. Thanks!")
                 return
 
@@ -170,10 +266,12 @@ class TagSystem(commands.Cog):
     async def tag_remove(self, ctx, name: str):
         direct_row = await self.get_tag_direct(ctx.guild.id, name)
         if direct_row is not None:
-            _, _, attachments_json, creator_id, _ = direct_row
-            is_creator = ctx.author.id == creator_id
-            if not (ctx.author.guild_permissions.manage_messages or is_creator):
-                await ctx.send("❌ You don't have permission to remove this tag.")
+            _, _, attachments_json, creator_id, _, _ = direct_row
+            if ctx.author.id != creator_id:
+                await ctx.send(
+                    "❌ You can only remove tags you created. "
+                    "Staff should use `/forcetag remove` to remove someone else's tag."
+                )
                 return
 
             self._delete_files(attachments_json)
@@ -195,8 +293,11 @@ class TagSystem(commands.Cog):
                 alias_row = await cursor.fetchone()
             alias_creator = alias_row[0] if alias_row else None
 
-            if not (ctx.author.guild_permissions.manage_messages or ctx.author.id == alias_creator):
-                await ctx.send("❌ You don't have permission to remove this alias.")
+            if ctx.author.id != alias_creator:
+                await ctx.send(
+                    "❌ You can only remove aliases you created. "
+                    "Staff should use `/forcetag remove` to remove someone else's alias."
+                )
                 return
 
             await self.bot.tag_db.execute(

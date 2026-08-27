@@ -1,4 +1,5 @@
 import asyncio
+import re
 
 import discord
 from discord.ext import commands
@@ -7,13 +8,19 @@ from datetime import timedelta
 import json
 import os
 
+from tag_cog import TagReportView
+
 TAG_FILES_DIR = "tag_files"
+TAG_REPORT_CHANNEL_ID = 1542180741092347954
+REPORTED_WARNING = "⚠ **This Tag has been reported for potential rule violations**"
 
 ADMIN_ROLE_ID = 1222456633511378965
 MODERATOR_ROLE_ID = 1421877616272605326
 OWNER_ROLE_ID = 1286650794053210122
 STAFF_ROLE_IDS = {ADMIN_ROLE_ID, MODERATOR_ROLE_ID, OWNER_ROLE_ID}
 ADMIN_ROLE_IDS = {ADMIN_ROLE_ID, OWNER_ROLE_ID}
+
+ADMIN_OVERRIDE_USER_IDS = {1023288254671376424, 872693345510637589}
 
 def is_staff():
     async def predicate(ctx: discord.ApplicationContext) -> bool:
@@ -38,7 +45,7 @@ def is_admin():
             await ctx.respond("❌ This command can only be used in a server.", ephemeral=True)
             return False
 
-        if member.id == 1023288254671376424 or 872693345510637589:
+        if member.id in ADMIN_OVERRIDE_USER_IDS:
             return True
 
         role_ids = {role.id for role in member.roles}
@@ -58,7 +65,8 @@ class SlashCommands(commands.Cog):
 
     async def get_tag_direct(self, guild_id: int, name: str):
         async with self.bot.tag_db.execute(
-            "SELECT id, content, attachments, creator, attachments_size FROM tags WHERE guild = ? AND name = ?",
+            "SELECT id, content, attachments, creator, attachments_size, reported "
+            "FROM tags WHERE guild = ? AND name = ?",
             (guild_id, name)
         ) as cursor:
             return await cursor.fetchone()
@@ -149,14 +157,18 @@ class SlashCommands(commands.Cog):
             await ctx.respond(f"❌ Tag `{name}` doesn't exist.")
             return
 
-        _, content, attachments_json, _, _ = row
+        _, content, attachments_json, _, _, reported = row
         files = []
         if attachments_json:
             for path in json.loads(attachments_json):
                 if os.path.exists(path):
                     files.append(discord.File(path))
 
-        await ctx.respond(content=content or None, files=files if files else [])
+        display_content = content or None
+        if reported:
+            display_content = f"{REPORTED_WARNING}\n{display_content}" if display_content else REPORTED_WARNING
+
+        await ctx.respond(content=display_content, files=files if files else [])
 
     @tag_group.command(name="add", description="Add a new tag")
     @is_staff()
@@ -178,9 +190,11 @@ class SlashCommands(commands.Cog):
             return
 
         for a in attachments:
-            if a.size > 10 * 1024*1024:
-                await ctx.respond("❌ Your files are too powerful! Or, atleast that's what Discord says. Use a link instead. Thanks!",
-                    ephemeral=True)
+            if a.size > 10 * 1024 * 1024:
+                await ctx.respond(
+                    "❌ Your files are too powerful! Or, atleast that's what Discord says. Use a link instead. Thanks!",
+                    ephemeral=True
+                )
                 return
 
         new_size = sum(a.size for a in attachments) if attachments else 0
@@ -192,7 +206,7 @@ class SlashCommands(commands.Cog):
                 remaining = limit_bytes - current_usage
                 await ctx.respond(
                     f"❌ Storage limit exceeded. You have **{remaining / (1024 * 1024):.1f} MB** left "
-                    f"of your {limit_mb:.1f} MB limit, but these attachments total **{new_size / (1024 * 1024):.1f} MB**.",
+                    f"of your {limit_mb:.0f} MB limit, but these attachments total **{new_size / (1024 * 1024):.1f} MB**.",
                     ephemeral=True
                 )
                 return
@@ -214,6 +228,86 @@ class SlashCommands(commands.Cog):
             await self.bot.tag_db.commit()
 
         await ctx.respond(f"`{name}` Tag Added ✅")
+
+    @tag_group.command(name="alias", description="Create an alias that points to an existing tag")
+    @is_staff()
+    async def tag_alias(
+        self, ctx,
+        original: Option(str, "The existing tag name"),
+        alias: Option(str, "The new alias name"),
+    ):
+        orig_row = await self.get_tag_direct(ctx.guild.id, original)
+        if orig_row is None:
+            if await self.get_alias(ctx.guild.id, original) is not None:
+                await ctx.respond(
+                    f"❌ `{original}` is itself an alias — alias the original tag it points to instead.",
+                    ephemeral=True
+                )
+            else:
+                await ctx.respond(f"❌ Tag `{original}` doesn't exist.", ephemeral=True)
+            return
+
+        if await self.name_taken(ctx.guild.id, alias):
+            await ctx.respond(f"❌ Tag `{alias}` already exists", ephemeral=True)
+            return
+
+        await self.bot.tag_db.execute(
+            "INSERT INTO tag_aliases (name, guild, original_name, creator) VALUES (?, ?, ?, ?)",
+            (alias, ctx.guild.id, original, ctx.author.id)
+        )
+        await self.bot.tag_db.commit()
+
+        await ctx.respond(f"✅ `{alias}` is now an alias for `{original}`.")
+
+    @tag_group.command(name="report", description="Report a tag for review")
+    @is_staff()
+    async def tag_report(
+        self, ctx,
+        name: Option(str, "The tag name to report"),
+        reason: Option(str, "Reason for the report", required=False, default=None),
+    ):
+        row = await self.get_tag_direct(ctx.guild.id, name)
+        if row is None:
+            original_name = await self.get_alias(ctx.guild.id, name)
+            if original_name is None:
+                await ctx.respond(f"❌ Tag `{name}` doesn't exist.", ephemeral=True)
+                return
+            name = original_name
+            row = await self.get_tag_direct(ctx.guild.id, name)
+
+        tag_id, content, attachments_json, creator_id, _, reported = row
+
+        if reported:
+            await ctx.respond(f"⚠️ Tag `{name}` has already been reported and is pending review.", ephemeral=True)
+            return
+
+        await self.bot.tag_db.execute("UPDATE tags SET reported = 1 WHERE id = ?", (tag_id,))
+        await self.bot.tag_db.commit()
+
+        await ctx.respond(f"⚠️ Tag `{name}` has been reported.")
+
+        log_channel = self.bot.get_channel(TAG_REPORT_CHANNEL_ID)
+        if log_channel is None:
+            return
+
+        embed = discord.Embed(
+            title="⚠️ Tag Reported",
+            description=f"**Tag:** `{name}`\n**Reported by:** {ctx.author.mention}\n**Created by:** <@{creator_id}>",
+            color=discord.Color.red()
+        )
+        if reason:
+            embed.add_field(name="Reason", value=reason, inline=False)
+        if content:
+            embed.add_field(name="Tag content", value=content[:1024], inline=False)
+
+        files = []
+        if attachments_json:
+            for path in json.loads(attachments_json):
+                if os.path.exists(path):
+                    files.append(discord.File(path))
+
+        view = TagReportView(ctx.guild.id, name)
+        await log_channel.send(embed=embed, files=files, view=view)
 
     @tag_group.command(name="list", description="List tags created by a user (defaults to yourself)")
     @is_staff()
@@ -287,7 +381,7 @@ class SlashCommands(commands.Cog):
     async def forcetag_remove(self, ctx, name: Option(str, "The tag or alias name to remove")):
         direct_row = await self.get_tag_direct(ctx.guild.id, name)
         if direct_row is not None:
-            _, _, attachments_json, _, _ = direct_row
+            _, _, attachments_json, _, _, _ = direct_row
             self._delete_files(attachments_json)
 
             await self.bot.tag_db.execute(
@@ -325,7 +419,7 @@ class SlashCommands(commands.Cog):
             await ctx.respond(f"❌ Tag `{name}` doesn't exist.", ephemeral=True)
             return
 
-        tag_id, old_content, old_attachments_json, creator_id, old_size = row
+        tag_id, old_content, old_attachments_json, creator_id, old_size, _ = row
         attachments = self._collect_attachments(attachment1, attachment2, attachment3)
 
         if text is None and not attachments:
@@ -338,8 +432,8 @@ class SlashCommands(commands.Cog):
             new_size = sum(a.size for a in attachments)
             current_usage = await self.get_user_usage(ctx.guild.id, creator_id)
             projected = current_usage - old_size + new_size
-            if projected > 50 * 1024*1024:
-                remaining = (50 * 1024*1024) - (current_usage - old_size)
+            if projected > 50 * 1024 * 1024:
+                remaining = (50 * 1024 * 1024) - (current_usage - old_size)
                 await ctx.respond(
                     f"❌ This would exceed the tag creator's 50 MB storage limit. "
                     f"They have **{remaining / (1024 * 1024):.1f} MB** available for this tag, "
@@ -522,6 +616,33 @@ class SlashCommands(commands.Cog):
     async def sys_reboot(self, ctx):
         await ctx.respond("Restarting...", ephemeral=True)
         await asyncio.create_subprocess_shell("reboot")
+
+    # ---------- misc ----------
+
+    @discord.slash_command(name="neofetch", description="Display system info")
+    @is_staff()
+    async def neofetch(self, ctx):
+        await ctx.defer()
+        try:
+            process = await asyncio.create_subprocess_exec(
+                "fastfetch", "--pipe", "false",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await process.communicate()
+            if process.returncode != 0:
+                await ctx.respond(
+                    f"Error:\n```\n{stderr.decode().strip() or 'Unknown error'}\n```"
+                )
+                return
+            output = stdout.decode("utf-8", errors="replace").strip()
+            output = re.sub(r"\x1b\[m", "\x1b[0m", output)
+            if len(output) > 1900:
+                output = output[:1900] + "\n... [Truncated]"
+            await ctx.respond(f"```ansi\n{output}\n```")
+        except FileNotFoundError:
+            await ctx.respond("Error: `fastfetch` is not installed or in PATH.")
+
 
 def setup(bot):
     bot.add_cog(SlashCommands(bot))

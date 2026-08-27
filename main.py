@@ -8,6 +8,8 @@ import os
 import aiosqlite
 from dotenv import load_dotenv
 
+from tag_cog import TagReportView
+
 load_dotenv()
 
 intents = discord.Intents.default()
@@ -31,28 +33,6 @@ async def on_ready():
 async def ping(ctx):
     await ctx.send("Pong!")
 
-@bot.command()
-async def neofetch(ctx):
-    try:
-        process = await asyncio.create_subprocess_exec(
-            "fastfetch", "--pipe", "false",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await process.communicate()
-        if process.returncode != 0:
-            await ctx.send(
-                f"Error:\n```\n{stderr.decode().strip() or 'Unknown error'}\n```"
-            )
-            return
-        output = stdout.decode("utf-8", errors="replace").strip()
-        output = re.sub(r"\x1b\[m", "\x1b[0m", output)
-        if len(output) > 1900:
-            output = output[:1900] + "\n... [Truncated]"
-        await ctx.send(f"```ansi\n{output}\n```")
-    except FileNotFoundError:
-        await ctx.send("Error: `fastfetch` is not installed or in PATH.")
-
 async def setup_database(bot):
     bot.tag_db = await aiosqlite.connect("tags.db")
 
@@ -63,17 +43,20 @@ async def setup_database(bot):
             content TEXT,
             attachments TEXT,
             attachments_size INTEGER NOT NULL DEFAULT 0,
+            reported INTEGER NOT NULL DEFAULT 0,
             guild INTEGER NOT NULL,
             creator INTEGER NOT NULL,
             UNIQUE(name, guild)
         )"""
     )
-    try:
-        await bot.tag_db.execute(
-            "ALTER TABLE tags ADD COLUMN attachments_size INTEGER NOT NULL DEFAULT 0"
-        )
-    except aiosqlite.OperationalError:
-        pass
+    for migration in (
+        "ALTER TABLE tags ADD COLUMN attachments_size INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE tags ADD COLUMN reported INTEGER NOT NULL DEFAULT 0",
+    ):
+        try:
+            await bot.tag_db.execute(migration)
+        except aiosqlite.OperationalError:
+            pass
 
     await bot.tag_db.execute(
         """CREATE TABLE IF NOT EXISTS tag_aliases (
@@ -98,9 +81,16 @@ async def setup_database(bot):
 
     await bot.tag_db.commit()
 
+async def register_persistent_views(bot):
+    async with bot.tag_db.execute("SELECT guild, name FROM tags WHERE reported = 1") as cursor:
+        rows = await cursor.fetchall()
+    for guild_id, name in rows:
+        bot.add_view(TagReportView(guild_id, name))
+
 async def main():
     async with bot:
         await setup_database(bot)
+        await register_persistent_views(bot)
 
         bot.load_extension('help_cog')
         bot.load_extension('tag_cog')
