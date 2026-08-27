@@ -10,6 +10,8 @@ MODERATOR_ROLE_ID = 1421877616272605326
 OWNER_ROLE_ID = 1286650794053210122
 ALLOWED_ROLE_IDS = {ADMIN_ROLE_ID, MODERATOR_ROLE_ID, OWNER_ROLE_ID}
 
+TAG_REPORT_CHANNEL_ID = 1542180741092347954
+
 REPORTED_WARNING = "⚠️ **This Tag has been reported for potential rule violations**"
 
 
@@ -162,8 +164,8 @@ class TagSystem(commands.Cog):
         if name is None:
             await ctx.send(
                 "Usage: `.tag <name>`, `.tag add <name> <content>`, `.tag remove <name>`, "
-                "`.tag alias <original> <alias>`, `.tag list [@user]`, `.tag listall`, "
-                "`.tag usage [@user]` (alias: `.tag storage`)"
+                "`.tag alias <original> <alias>`, `.tag report <name>`, `.tag list [@user]`, "
+                "`.tag listall`, `.tag usage [@user]` (alias: `.tag storage`)"
             )
             return
 
@@ -261,6 +263,51 @@ class TagSystem(commands.Cog):
         await self.bot.tag_db.commit()
 
         await ctx.send(f"✅ `{alias}` is now an alias for `{original}`.")
+
+    @tag.command(name="report")
+    async def tag_report(self, ctx, name: str, *, reason: str = None):
+        row = await self.get_tag_direct(ctx.guild.id, name)
+        if row is None:
+            original_name = await self.get_alias(ctx.guild.id, name)
+            if original_name is None:
+                await ctx.send(f"❌ Tag `{name}` doesn't exist.")
+                return
+            name = original_name
+            row = await self.get_tag_direct(ctx.guild.id, name)
+
+        tag_id, content, attachments_json, creator_id, _, reported = row
+
+        if reported:
+            await ctx.send(f"⚠️ Tag `{name}` has already been reported and is pending review.")
+            return
+
+        await self.bot.tag_db.execute("UPDATE tags SET reported = 1 WHERE id = ?", (tag_id,))
+        await self.bot.tag_db.commit()
+
+        await ctx.send(f"⚠️ Tag `{name}` has been reported. A moderator will review it shortly.")
+
+        log_channel = self.bot.get_channel(TAG_REPORT_CHANNEL_ID)
+        if log_channel is None:
+            return
+
+        embed = discord.Embed(
+            title="⚠️ Tag Reported",
+            description=f"**Tag:** `{name}`\n**Reported by:** {ctx.author.mention}\n**Created by:** <@{creator_id}>",
+            color=discord.Color.red()
+        )
+        if reason:
+            embed.add_field(name="Reason", value=reason, inline=False)
+        if content:
+            embed.add_field(name="Tag content", value=content[:1024], inline=False)
+
+        files = []
+        if attachments_json:
+            for path in json.loads(attachments_json):
+                if os.path.exists(path):
+                    files.append(discord.File(path))
+
+        view = TagReportView(ctx.guild.id, name)
+        await log_channel.send(embed=embed, files=files, view=view)
 
     @tag.command(name="remove")
     async def tag_remove(self, ctx, name: str):
