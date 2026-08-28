@@ -702,6 +702,14 @@ class SlashCommands(commands.Cog):
     async def ping(self, ctx):
         await ctx.respond("Pong!")
 
+    @discord.slash_command(name="kill", description=":)")
+    @is_staff()
+    async def kill(
+        self, ctx,
+        member: Option(discord.Member, "Member to kill"),
+    ):
+        await ctx.respond(f"{ctx.author.mention} just killed {member.mention}!")
+
 
 def setup(bot):
     bot.add_cog(SlashCommands(bot))
