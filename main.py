@@ -17,9 +17,6 @@ intents.members = True
 
 
 class ReplyContext(commands.Context):
-    """Makes every `.` command reply (quote the invoking message) instead of
-    sending a plain message, but without pinging the original author.
-    (no idea if theres a better way to do it but hey if it works don't touch it :D)"""
 
     async def send(self, *args, **kwargs):
         kwargs.setdefault("reference", self.message)
@@ -102,9 +99,19 @@ async def setup_database(bot):
     await bot.tag_db.execute(
         """CREATE TABLE IF NOT EXISTS help_threads (
             thread_id INTEGER PRIMARY KEY,
-            requester_id INTEGER NOT NULL
+            requester_id INTEGER NOT NULL,
+            closed INTEGER NOT NULL DEFAULT 0,
+            closed_at TEXT
         )"""
     )
+    for migration in (
+        "ALTER TABLE help_threads ADD COLUMN closed INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE help_threads ADD COLUMN closed_at TEXT",
+    ):
+        try:
+            await bot.tag_db.execute(migration)
+        except aiosqlite.OperationalError:
+            pass
 
     await bot.tag_db.commit()
 
