@@ -158,7 +158,6 @@ class CommunityHelp(commands.Cog):
             print(f"Error: {e}")
 
     # ---------- closing / reopening threads ----------
-    # pretty sure theres a better way to do this too, eh
 
     def _resolve_thread(self, channel):
         if not isinstance(channel, discord.Thread) or channel.parent_id != self.HELP_CHANNEL_ID:
@@ -183,13 +182,16 @@ class CommunityHelp(commands.Cog):
         if thread is None:
             return
 
-        requester_id, closed = await self._get_thread_row(thread)
+        _, closed = await self._get_thread_row(thread)
         if not closed:
             return
 
-        is_requester = message.author.id == requester_id
         is_staff = isinstance(message.author, discord.Member) and message.author.guild_permissions.manage_messages
-        if is_requester or is_staff:
+        if is_staff:
+            return
+
+        ctx = await self.bot.get_context(message)
+        if ctx.valid:
             return
 
         try:
@@ -199,7 +201,7 @@ class CommunityHelp(commands.Cog):
 
         try:
             await thread.send(
-                f"❌ {message.author.mention} This thread is closed, if you want to reopen run `.reopen` instead.",
+                f"🔒 {message.author.mention} This thread is closed, if you want to reopen run `.reopen` instead.",
                 delete_after=10
             )
         except discord.HTTPException:
