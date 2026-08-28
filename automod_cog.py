@@ -11,9 +11,9 @@ HONEYPOT_CHANNEL_ID = 1512206288631627927
 HONEYPOT_LOG_CHANNEL_ID = 1472650884906221771
 
 SPAM_WINDOW_SECONDS = 3.0
-SPAM_MESSAGE_THRESHOLD = 5
+SPAM_MESSAGE_THRESHOLD = 3
 SPAM_SIMILARITY_RATIO = 0.85
-BASE_TIMEOUT_SECONDS = 5
+BASE_TIMEOUT_SECONDS = 10
 
 
 class AntiSpam(commands.Cog):
@@ -113,13 +113,12 @@ class AntiSpam(commands.Cog):
         if count < 3:
             return
 
-        duration = BASE_TIMEOUT_SECONDS * (2 ** (count - 3))
+        duration = BASE_TIMEOUT_SECONDS * (2 ^ (count - 3))
         try:
             until = discord.utils.utcnow() + timedelta(seconds=duration)
             await member.timeout(until, reason=f"Automated spam detection (warning #{count})")
             await message.channel.send(
-                f"🔇 {member.mention} has been timed out for {duration} second(s) for repeated spam.",
-                delete_after=10
+                f"🔇 {member.mention} has been timed out for {duration} second(s) for repeated spam."
             )
         except (discord.Forbidden, discord.HTTPException):
             pass

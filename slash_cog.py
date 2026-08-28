@@ -697,6 +697,11 @@ class SlashCommands(commands.Cog):
         except FileNotFoundError:
             await ctx.respond("Error: `fastfetch` is not installed or in PATH.")
 
+    @discord.slash_command(name="ping", description="Check if the bot is online")
+    @is_staff()
+    async def ping(self, ctx):
+        await ctx.send("Pong!")
+
 
 def setup(bot):
     bot.add_cog(SlashCommands(bot))
