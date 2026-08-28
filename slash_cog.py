@@ -473,9 +473,11 @@ class SlashCommands(commands.Cog):
 
     # ---------- moderation ----------
 
-    @discord.slash_command(name="warn", description="Warn a member")
+    warn_group = SlashCommandGroup("warn", "Warn members and view their warning history (staff only)")
+
+    @warn_group.command(name="add", description="Warn a member")
     @is_staff()
-    async def warn(
+    async def warn_add(
         self, ctx,
         member: Option(discord.Member, "Member to warn"),
         reason: Option(str, "Reason for the warning", required=False, default="No reason provided"),
@@ -497,6 +499,45 @@ class SlashCommands(commands.Cog):
             pass
 
         await ctx.respond(f"⚠️ {member.mention} has been warned. Reason: {reason}")
+
+    @warn_group.command(name="history", description="View a member's warning history")
+    @is_staff()
+    async def warn_history(
+        self, ctx,
+        member: Option(discord.Member, "Member whose warning history to view"),
+    ):
+        await ctx.defer()
+
+        async with self.bot.tag_db.execute(
+            "SELECT moderator_id, reason, timestamp FROM warnings "
+            "WHERE guild = ? AND user_id = ? ORDER BY timestamp DESC LIMIT 25",
+            (ctx.guild.id, member.id)
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        if not rows:
+            await ctx.respond(f"✅ {member.mention} has no recorded warnings.")
+            return
+
+        embed = discord.Embed(
+            title=f"⚠️ Warning history for {member.display_name}",
+            color=discord.Color.orange()
+        )
+        for i, (moderator_id, reason, timestamp) in enumerate(rows, start=1):
+            try:
+                when = discord.utils.parse_time(timestamp)
+                when_str = discord.utils.format_dt(when, style="R") if when else timestamp
+            except (ValueError, TypeError):
+                when_str = timestamp
+
+            embed.add_field(
+                name=f"#{i} — {when_str}",
+                value=f"**Reason:** {reason or 'No reason provided'}\n**By:** <@{moderator_id}>",
+                inline=False
+            )
+        embed.set_footer(text=f"{len(rows)} warning(s) shown (max 25)")
+
+        await ctx.respond(embed=embed)
 
     @discord.slash_command(name="mute", description="Voice-mute or unmute a member (they can still type)")
     @is_staff()

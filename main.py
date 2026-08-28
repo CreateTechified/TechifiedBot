@@ -15,7 +15,28 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 
-bot = commands.Bot(
+
+class ReplyContext(commands.Context):
+    """Makes every `.` command reply (quote the invoking message) instead of
+    sending a plain message, but without pinging the original author.
+    (no idea if theres a better way to do it but hey if it works don't touch it :D)"""
+
+    async def send(self, *args, **kwargs):
+        kwargs.setdefault("reference", self.message)
+        kwargs.setdefault("mention_author", False)
+        try:
+            return await super().send(*args, **kwargs)
+        except discord.HTTPException:
+            kwargs.pop("reference", None)
+            return await super().send(*args, **kwargs)
+
+
+class TechifiedBot(commands.Bot):
+    async def get_context(self, message, *, cls=ReplyContext):
+        return await super().get_context(message, cls=cls)
+
+
+bot = TechifiedBot(
     command_prefix=".",
     intents=intents,
     auto_sync_commands=True
@@ -78,6 +99,13 @@ async def setup_database(bot):
         )"""
     )
 
+    await bot.tag_db.execute(
+        """CREATE TABLE IF NOT EXISTS help_threads (
+            thread_id INTEGER PRIMARY KEY,
+            requester_id INTEGER NOT NULL
+        )"""
+    )
+
     await bot.tag_db.commit()
 
 async def register_persistent_views(bot):
@@ -95,6 +123,7 @@ async def main():
         bot.load_extension('tag_cog')
         bot.load_extension('server_cog')
         bot.load_extension('slash_cog')
+        bot.load_extension('automod_cog')
 
         token = os.getenv("DSC_TOKEN")
         if not token:

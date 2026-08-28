@@ -43,6 +43,10 @@ class CommunityHelp(commands.Cog):
                     try:
                         thread_name = thread.name
                         await thread.delete()
+                        await self.bot.tag_db.execute(
+                            "DELETE FROM help_threads WHERE thread_id = ?", (thread.id,)
+                        )
+                        await self.bot.tag_db.commit()
                         if staff_log:
                             await staff_log.send(
                                 f"🗑️ **Auto-Cleanup**: Deleted resolved thread `{thread_name}` (Closed 7+ days ago).")
@@ -125,35 +129,61 @@ class CommunityHelp(commands.Cog):
             )
             thread = await master_msg.create_thread(name=f"❓｜{message.author.display_name}")
 
+            await self.bot.tag_db.execute(
+                "INSERT OR REPLACE INTO help_threads (thread_id, requester_id) VALUES (?, ?)",
+                (thread.id, message.author.id)
+            )
+            await self.bot.tag_db.commit()
+
             if attachments:
                 files_to_send = [await a.to_file() for a in attachments]
                 await thread.send("**Original attachments:**", files=files_to_send)
 
-            await thread.send(f"Discussion for {message.author.mention}. Use `.close` once resolved.")
+            await thread.send(f"Discussion for {message.author.mention}. Use `/close` once resolved.")
             await message.delete()
         except discord.HTTPException as e:
             print(f"Error: {e}")
 
-    @commands.command(name="close")
-    async def close_thread(self, ctx):
+    @discord.slash_command(name="close", description="Close and resolve this support thread")
+    async def close_thread(self, ctx: discord.ApplicationContext):
         if not isinstance(ctx.channel, discord.Thread) or ctx.channel.parent_id != self.HELP_CHANNEL_ID:
+            await ctx.respond("❌ This command can only be used inside a support thread.", ephemeral=True)
             return
 
-        if ctx.author.guild_permissions.manage_messages or ctx.channel.owner_id == ctx.author.id:
-            try:
-                starter_message = await ctx.channel.parent.fetch_message(ctx.channel.id)
-                await starter_message.delete()
-            except discord.NotFound:
-                pass
-            except discord.Forbidden:
-                print("Bot lacks permission to delete the embed message.")
-            except discord.HTTPException as e:
-                print(f"Failed to delete embed: {e}")
+        async with self.bot.tag_db.execute(
+            "SELECT requester_id FROM help_threads WHERE thread_id = ?", (ctx.channel.id,)
+        ) as cursor:
+            row = await cursor.fetchone()
 
-            new_name = ctx.channel.name.replace("❓", "✅")
-            await ctx.send(
-                "✅ **Issue resolved. The main embed has been removed. This thread will be deleted in 7 days.**")
-            await ctx.channel.edit(name=new_name, archived=True, locked=True)
+        requester_id = row[0] if row else ctx.channel.owner_id
+
+        is_requester = ctx.author.id == requester_id
+        is_staff = ctx.author.guild_permissions.manage_messages
+
+        if not (is_requester or is_staff):
+            await ctx.respond(
+                "❌ Only the person who opened this thread (or staff) can close it.",
+                ephemeral=True
+            )
+            return
+
+        await ctx.defer()
+
+        try:
+            starter_message = await ctx.channel.parent.fetch_message(ctx.channel.id)
+            await starter_message.delete()
+        except discord.NotFound:
+            pass
+        except discord.Forbidden:
+            print("Bot lacks permission to delete the embed message.")
+        except discord.HTTPException as e:
+            print(f"Failed to delete embed: {e}")
+
+        new_name = ctx.channel.name.replace("❓", "✅")
+        await ctx.respond(
+            "✅ **Issue resolved. The main embed has been removed. This thread will be deleted in 7 days.**"
+        )
+        await ctx.channel.edit(name=new_name, archived=True, locked=True)
 
 # LEAVE THIS NON-ASYNC! IT CRASHES!!!
 def setup(bot):
