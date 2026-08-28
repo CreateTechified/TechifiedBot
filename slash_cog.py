@@ -700,7 +700,7 @@ class SlashCommands(commands.Cog):
     @discord.slash_command(name="ping", description="Check if the bot is online")
     @is_staff()
     async def ping(self, ctx):
-        await ctx.send("Pong!")
+        await ctx.respond("Pong!")
 
 
 def setup(bot):

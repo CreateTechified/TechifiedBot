@@ -14,6 +14,7 @@ SPAM_WINDOW_SECONDS = 3.0
 SPAM_MESSAGE_THRESHOLD = 3
 SPAM_SIMILARITY_RATIO = 0.85
 BASE_TIMEOUT_SECONDS = 10
+MAX_TIMEOUT_SECONDS = 28 * 24 * 60 * 60 # should be enough..?
 
 
 class AntiSpam(commands.Cog):
@@ -113,7 +114,7 @@ class AntiSpam(commands.Cog):
         if count < 3:
             return
 
-        duration = BASE_TIMEOUT_SECONDS * (2 ^ (count - 3))
+        duration = min(BASE_TIMEOUT_SECONDS ** (count - 2), MAX_TIMEOUT_SECONDS)
         try:
             until = discord.utils.utcnow() + timedelta(seconds=duration)
             await member.timeout(until, reason=f"Automated spam detection (warning #{count})")
