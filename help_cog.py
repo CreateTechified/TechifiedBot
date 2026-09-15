@@ -30,6 +30,11 @@ class CommunityHelp(commands.Cog):
         now = datetime.now(timezone.utc)
         threshold = timedelta(days=7)
 
+        try:
+            help_channel = self.bot.get_channel(self.HELP_CHANNEL_ID) or await self.bot.fetch_channel(self.HELP_CHANNEL_ID)
+        except discord.HTTPException:
+            help_channel = None
+
         async with self.bot.tag_db.execute(
             "SELECT thread_id, closed_at FROM help_threads WHERE closed = 1 AND closed_at IS NOT NULL"
         ) as cursor:
@@ -53,6 +58,13 @@ class CommunityHelp(commands.Cog):
                 pass
             except discord.HTTPException:
                 continue
+
+            if help_channel is not None:
+                try:
+                    master_msg = await help_channel.fetch_message(thread_id)
+                    await master_msg.delete()
+                except (discord.NotFound, discord.HTTPException):
+                    pass
 
             await self.bot.tag_db.execute("DELETE FROM help_threads WHERE thread_id = ?", (thread_id,))
             await self.bot.tag_db.commit()

@@ -1,4 +1,5 @@
 import asyncio
+import io
 import re
 
 import discord
@@ -8,7 +9,7 @@ from datetime import timedelta
 import json
 import os
 
-from tag_cog import TagReportView
+from tag_cog import TagReportView, VALID_NAME_CHARS
 
 TAG_FILES_DIR = "tag_files"
 TAG_REPORT_CHANNEL_ID = 1542180741092347954
@@ -181,6 +182,10 @@ class SlashCommands(commands.Cog):
         attachment2: Option(discord.Attachment, "Image or GIF", required=False, default=None),
         attachment3: Option(discord.Attachment, "Image or GIF", required=False, default=None),
     ):
+        if any(char not in VALID_NAME_CHARS for char in name):
+            await ctx.respond("⚠️ Tag name must consist of characters `a-z`, `0-9`, `_`, or `-`.", ephemeral=True)
+            return
+
         if await self.name_taken(ctx.guild.id, name):
             await ctx.respond(f"❌ Tag `{name}` already exists", ephemeral=True)
             return
@@ -237,6 +242,10 @@ class SlashCommands(commands.Cog):
         original: Option(str, "The existing tag name"),
         alias: Option(str, "The new alias name"),
     ):
+        if any(char not in VALID_NAME_CHARS for char in alias):
+            await ctx.respond("⚠️ Tag name must consist of characters `a-z`, `0-9`, `_`, or `-`.", ephemeral=True)
+            return
+
         orig_row = await self.get_tag_direct(ctx.guild.id, original)
         if orig_row is None:
             if await self.get_alias(ctx.guild.id, original) is not None:
@@ -359,6 +368,26 @@ class SlashCommands(commands.Cog):
         )
         embed.set_footer(text=f"{len(rows)} tag(s)")
         await ctx.respond(embed=embed)
+
+    @tag_group.command(name="listlog", description="Get every tag name in the server as a downloadable .txt file")
+    @is_staff()
+    async def tag_listlog(self, ctx):
+        await ctx.defer()
+
+        async with self.bot.tag_db.execute(
+            "SELECT name FROM tags WHERE guild = ? ORDER BY name", (ctx.guild.id,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        if not rows:
+            await ctx.respond("No tags exist in this server yet.")
+            return
+
+        content = "\n".join(row[0] for row in rows)
+        buffer = io.BytesIO(content.encode("utf-8"))
+        file = discord.File(fp=buffer, filename="tags.txt")
+
+        await ctx.respond(f"📑 {len(rows)} tag(s) in {ctx.guild.name}:", file=file)
 
     @tag_group.command(name="usage", description="Check a user's tag storage usage")
     @is_staff()

@@ -86,6 +86,14 @@ async def setup_database(bot):
     )
 
     await bot.tag_db.execute(
+        """CREATE TABLE IF NOT EXISTS tag_command_aliases (
+            alias TEXT PRIMARY KEY,
+            target_command TEXT NOT NULL,
+            creator INTEGER NOT NULL
+        )"""
+    )
+
+    await bot.tag_db.execute(
         """CREATE TABLE IF NOT EXISTS warnings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             guild INTEGER NOT NULL,
@@ -121,6 +129,21 @@ async def register_persistent_views(bot):
     for guild_id, name in rows:
         bot.add_view(TagReportView(guild_id, name))
 
+async def register_tag_command_aliases(bot):
+    cog = bot.get_cog("TagSystem")
+    if cog is None:
+        return
+
+    async with bot.tag_db.execute(
+        "SELECT alias, target_command FROM tag_command_aliases"
+    ) as cursor:
+        rows = await cursor.fetchall()
+
+    for alias, target in rows:
+        target_command = cog.tag.all_commands.get(target)
+        if target_command is not None:
+            cog.tag.all_commands[alias] = target_command
+
 async def main():
     async with bot:
         await setup_database(bot)
@@ -131,6 +154,8 @@ async def main():
         bot.load_extension('server_cog')
         bot.load_extension('slash_cog')
         bot.load_extension('automod_cog')
+
+        await register_tag_command_aliases(bot)
 
         token = os.getenv("DSC_TOKEN")
         if not token:

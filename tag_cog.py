@@ -1,9 +1,11 @@
 import discord
 from discord.ext import commands
+import io
 import json
 import os
 
 TAG_FILES_DIR = "tag_files"
+VALID_NAME_CHARS = set("0123456789abcdefghijklmnopqrstuvwxyz_-")
 
 ADMIN_ROLE_ID = 1222456633511378965
 MODERATOR_ROLE_ID = 1421877616272605326
@@ -23,16 +25,18 @@ class ForceDeleteReasonModal(discord.ui.Modal):
         self.tag_name = tag_name
         self.parent_view = parent_view
         self.reason_input = discord.ui.InputText(
-            label="Reason for deletion",
+            label="Reason for deletion (optional)",
             style=discord.InputTextStyle.paragraph,
             placeholder="Why is this tag being deleted?",
-            required=True,
+            required=False,
             max_length=500,
         )
         self.add_item(self.reason_input)
 
     async def callback(self, interaction: discord.Interaction):
-        reason = self.reason_input.value
+        reason = self.reason_input.value.strip() if self.reason_input.value else ""
+        if not reason:
+            reason = "No reason provided"
         db = interaction.client.tag_db
 
         async with db.execute(
@@ -193,7 +197,7 @@ class TagSystem(commands.Cog):
             await ctx.send(
                 "Usage: `.tag <name>`, `.tag add <name> <content>`, `.tag remove <name>`, "
                 "`.tag alias <original> <alias>`, `.tag report <name>`, `.tag list [@user]`, "
-                "`.tag listall`, `.tag usage [@user]` (alias: `.tag storage`)"
+                "`.tag listall`, `.tag listlog`, `.tag usage [@user]` (alias: `.tag storage`)"
             )
             return
 
@@ -217,6 +221,14 @@ class TagSystem(commands.Cog):
 
     @tag.command(name="add")
     async def tag_add(self, ctx, name: str, *, content: str = None):
+        if any(char not in VALID_NAME_CHARS for char in name):
+            await ctx.send("⚠️ Tag name must consist of characters `a-z`, `0-9`, `_`, or `-`.")
+            return
+
+        if name in self.tag.all_commands:
+            await ctx.send(f"❌ `{name}` is a reserved command name and can't be used as a tag name.")
+            return
+
         if await self.name_taken(ctx.guild.id, name):
             await ctx.send(f"❌ Tag `{name}` already exists")
             return
@@ -272,6 +284,30 @@ class TagSystem(commands.Cog):
 
     @tag.command(name="alias")
     async def tag_alias(self, ctx, original: str, alias: str):
+        if any(char not in VALID_NAME_CHARS for char in alias):
+            await ctx.send("⚠️ Tag name must consist of characters a-z, 0-9, _, or -.")
+            return
+
+        if alias in self.tag.all_commands:
+            await ctx.send(f"❌ `{alias}` is a reserved command name and can't be used here.")
+            return
+
+        if original in self.tag.all_commands:
+            if await self.name_taken(ctx.guild.id, alias):
+                await ctx.send(f"❌ Tag `{alias}` already exists")
+                return
+
+            await self.bot.tag_db.execute(
+                "INSERT OR REPLACE INTO tag_command_aliases (alias, target_command, creator) VALUES (?, ?, ?)",
+                (alias, original, ctx.author.id)
+            )
+            await self.bot.tag_db.commit()
+
+            self.tag.all_commands[alias] = self.tag.all_commands[original]
+
+            await ctx.send(f"✅ `.tag {alias}` now works the same as `.tag {original}`.")
+            return
+
         orig_row = await self.get_tag_direct(ctx.guild.id, original)
         if orig_row is None:
             if await self.get_alias(ctx.guild.id, original) is not None:
@@ -428,6 +464,23 @@ class TagSystem(commands.Cog):
         )
         embed.set_footer(text=f"{len(rows)} tag(s)")
         await ctx.send(embed=embed)
+
+    @tag.command(name="listlog")
+    async def tag_log(self, ctx):
+        async with self.bot.tag_db.execute(
+            "SELECT name FROM tags WHERE guild = ? ORDER BY name", (ctx.guild.id,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        if not rows:
+            await ctx.send("No tags exist in this server yet.")
+            return
+
+        content = "\n".join(row[0] for row in rows)
+        buffer = io.BytesIO(content.encode("utf-8"))
+        file = discord.File(fp=buffer, filename="tags.txt")
+
+        await ctx.send(f"📑 {len(rows)} tag(s) in {ctx.guild.name}:", file=file)
 
     @tag.command(name="usage", aliases=["storage"])
     async def tag_usage(self, ctx, member: discord.Member = None):
