@@ -182,8 +182,8 @@ class SlashCommands(commands.Cog):
         attachment2: Option(discord.Attachment, "Image or GIF", required=False, default=None),
         attachment3: Option(discord.Attachment, "Image or GIF", required=False, default=None),
     ):
-        if any(char not in VALID_NAME_CHARS for char in name):
-            await ctx.respond("⚠️ Tag name must consist of characters `a-z`, `0-9`, `_`, or `-`.", ephemeral=True)
+        if not name or any(char not in VALID_NAME_CHARS for char in name):
+            await ctx.respond("⚠️ Tag name must consist of characters `a-z`, `0-9`, `_`, or `-`, and can't be empty.", ephemeral=True)
             return
 
         if await self.name_taken(ctx.guild.id, name):
@@ -242,8 +242,8 @@ class SlashCommands(commands.Cog):
         original: Option(str, "The existing tag name"),
         alias: Option(str, "The new alias name"),
     ):
-        if any(char not in VALID_NAME_CHARS for char in alias):
-            await ctx.respond("⚠️ Tag name must consist of characters `a-z`, `0-9`, `_`, or `-`.", ephemeral=True)
+        if not original or not alias or any(char not in VALID_NAME_CHARS for char in alias):
+            await ctx.respond("⚠️ Tag name must consist of characters `a-z`, `0-9`, `_`, or `-`, and can't be empty.", ephemeral=True)
             return
 
         orig_row = await self.get_tag_direct(ctx.guild.id, original)

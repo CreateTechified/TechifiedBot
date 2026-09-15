@@ -221,8 +221,8 @@ class TagSystem(commands.Cog):
 
     @tag.command(name="add")
     async def tag_add(self, ctx, name: str, *, content: str = None):
-        if any(char not in VALID_NAME_CHARS for char in name):
-            await ctx.send("⚠️ Tag name must consist of characters `a-z`, `0-9`, `_`, or `-`.")
+        if not name or any(char not in VALID_NAME_CHARS for char in name):
+            await ctx.send("⚠️ Tag name must consist of characters `a-z`, `0-9`, `_`, or `-`, and can't be empty.")
             return
 
         if name in self.tag.all_commands:
@@ -284,8 +284,8 @@ class TagSystem(commands.Cog):
 
     @tag.command(name="alias")
     async def tag_alias(self, ctx, original: str, alias: str):
-        if any(char not in VALID_NAME_CHARS for char in alias):
-            await ctx.send("⚠️ Tag name must consist of characters a-z, 0-9, _, or -.")
+        if not original or not alias or any(char not in VALID_NAME_CHARS for char in alias):
+            await ctx.send("⚠️ Tag name must consist of characters a-z, 0-9, _, or -, and can't be empty.")
             return
 
         if alias in self.tag.all_commands:
