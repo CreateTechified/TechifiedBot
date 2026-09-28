@@ -1,7 +1,7 @@
 import discord
 
 
-def build_pages(items, per_page=15, max_chars=3800, bullet="> "):
+def build_pages(items, per_page=15, max_chars=3800, bullet="- "):
     pages, current, size = [], [], 0
     for item in items:
         line = f"{bullet}{item}"[:max_chars]

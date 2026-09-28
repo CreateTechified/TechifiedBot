@@ -102,7 +102,7 @@ class AutoReply(commands.Cog):
             rows = await cursor.fetchall()
 
         if not rows:
-            await ctx.respond("No auto-reply triggers exist in this server yet.", ephemeral=True)
+            await ctx.respond("No auto-reply triggers exist in this server yet.")
             return
 
         await send_paged(

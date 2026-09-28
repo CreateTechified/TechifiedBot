@@ -336,7 +336,7 @@ class SlashCommands(commands.Cog):
 
         if not rows:
             who = "You haven't" if target == ctx.author else f"{target.display_name} hasn't"
-            await ctx.respond(f"{who} created any tags in this server yet.", ephemeral=True)
+            await ctx.respond(f"{who} created any tags in this server yet.")
             return
 
         possessive = "Your" if target == ctx.author else f"{target.display_name}'s"
@@ -355,7 +355,7 @@ class SlashCommands(commands.Cog):
             rows = await cursor.fetchall()
 
         if not rows:
-            await ctx.respond("No tags exist in this server yet.", ephemeral=True)
+            await ctx.respond("No tags exist in this server yet.")
             return
 
         await send_paged(
@@ -767,7 +767,7 @@ class SlashCommands(commands.Cog):
         await send_paged(
             ctx, f"🏷️ Roles in {ctx.guild.name}",
             [f"{r.mention} — `{r.id}`" for r in roles],
-            discord.Color.blurple(), noun="role(s)", ephemeral=True
+            discord.Color.blurple(), noun="role(s)"
         )
 
     @role_group.command(name="listlog", description="Get every role and its ID as a downloadable .txt file")
@@ -777,7 +777,7 @@ class SlashCommands(commands.Cog):
 
         content = "\n".join(f"{r.name} — {r.id}" for r in roles)
         file = discord.File(fp=io.BytesIO(content.encode("utf-8")), filename="roles.txt")
-        await ctx.respond(f"🏷️ {len(roles)} role(s) in {ctx.guild.name}:", file=file, ephemeral=True)
+        await ctx.respond(f"🏷️ {len(roles)} role(s) in {ctx.guild.name}:", file=file)
 
     # ---------- system administration ----------
     # Configured for Alpine Linux! May need to be changed for other environments.
