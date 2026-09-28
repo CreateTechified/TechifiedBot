@@ -34,7 +34,7 @@ class AutoReply(commands.Cog):
 
     # ---------- commands ----------
 
-    @wss_group.command(name="reply", description="Make the bot reply whenever a message contains some text")
+    @wss_group.command(name="reply", description="Make the bot reply whenever a message contains some text. Do NOT abuse this :D")
     @is_admin()
     async def wss_reply(
         self, ctx,
@@ -64,7 +64,7 @@ class AutoReply(commands.Cog):
         self._cache.pop(ctx.guild.id, None)
 
         await ctx.respond(
-            f"✅ Whenever a message contains `{trigger}`, I'll reply with:\n{reply}",
+            f"✅ Whenever a message contains `{trigger}`, I'll reply with:\n> {reply}",
             allowed_mentions=discord.AllowedMentions.none()
         )
 
@@ -85,7 +85,7 @@ class AutoReply(commands.Cog):
         await cursor.close()
 
         if not removed:
-            await ctx.respond(f"❌ No trigger `{trigger}` exists.", ephemeral=True)
+            await ctx.respond(f"❌ Trigger `{trigger}` doesn't exists.", ephemeral=True)
             return
 
         self._cache.pop(ctx.guild.id, None)

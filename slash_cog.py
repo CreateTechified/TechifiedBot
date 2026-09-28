@@ -660,8 +660,7 @@ class SlashCommands(commands.Cog):
 
     # ---------- role management ----------
 
-    add_group = SlashCommandGroup("add", "Add things to members (admin only)")
-    remove_group = SlashCommandGroup("remove", "Remove things from members (admin only)")
+    role_group = SlashCommandGroup("role", "Manage roles")
 
     @staticmethod
     def _role_problem(ctx, role: discord.Role):
@@ -670,15 +669,15 @@ class SlashCommands(commands.Cog):
         if role.managed:
             return "❌ That role is managed by an integration or bot and can't be assigned manually."
         if role >= ctx.guild.me.top_role:
-            return "❌ That role is higher than (or equal to) my highest role, so I can't manage it."
+            return "❌ That role is higher than my highest role, so I can't manage it."
         return None
 
-    @add_group.command(name="role", description="Give a role to a member")
+    @role_group.command(name="add", description="Give a role to a member")
     @is_admin()
-    async def add_role(
-        self, ctx,
-        member: Option(discord.Member, "Member to give the role to"),
-        role: Option(discord.Role, "Role to give"),
+    async def role_add(
+            self, ctx,
+            member: Option(discord.Member, "Member to give the role to"),
+            role: Option(discord.Role, "Role to give"),
     ):
         problem = self._role_problem(ctx, role)
         if problem:
@@ -691,7 +690,7 @@ class SlashCommands(commands.Cog):
             return
 
         try:
-            await member.add_roles(role, reason=f"Added by {ctx.author} via /add role")
+            await member.add_roles(role, reason=f"Added by {ctx.author} via /role add")
         except discord.Forbidden:
             await ctx.respond("❌ I don't have permission to do that.", ephemeral=True)
             return
@@ -699,12 +698,12 @@ class SlashCommands(commands.Cog):
         await ctx.respond(f"✅ Gave {role.mention} to {member.mention}.",
                           allowed_mentions=discord.AllowedMentions.none())
 
-    @remove_group.command(name="role", description="Take a role away from a member")
+    @role_group.command(name="remove", description="Take a role away from a member")
     @is_admin()
-    async def remove_role(
-        self, ctx,
-        member: Option(discord.Member, "Member to remove the role from"),
-        role: Option(discord.Role, "Role to remove"),
+    async def role_remove(
+            self, ctx,
+            member: Option(discord.Member, "Member to remove the role from"),
+            role: Option(discord.Role, "Role to remove"),
     ):
         problem = self._role_problem(ctx, role)
         if problem:
@@ -717,13 +716,75 @@ class SlashCommands(commands.Cog):
             return
 
         try:
-            await member.remove_roles(role, reason=f"Removed by {ctx.author} via /remove role")
+            await member.remove_roles(role, reason=f"Removed by {ctx.author} via /role remove")
         except discord.Forbidden:
             await ctx.respond("❌ I don't have permission to do that.", ephemeral=True)
             return
 
         await ctx.respond(f"✅ Removed {role.mention} from {member.mention}.",
                           allowed_mentions=discord.AllowedMentions.none())
+
+    @role_group.command(name="all", description="Give a role to all members")
+    @is_admin()
+    async def role_all(
+            self, ctx,
+            role: Option(discord.Role, "Role to give to everyone"),
+            include_bots: Option(bool, "Also give it to bots (default: no)", required=False, default=False),
+    ):
+        problem = self._role_problem(ctx, role)
+        if problem:
+            await ctx.respond(problem, ephemeral=True)
+            return
+
+        await ctx.defer()
+
+        if not ctx.guild.chunked:
+            await ctx.guild.chunk()
+
+        added = skipped = failed = 0
+        for member in ctx.guild.members:
+            if member.bot and not include_bots:
+                continue
+            if role in member.roles:
+                skipped += 1
+                continue
+            try:
+                await member.add_roles(role, reason=f"Mass-added by {ctx.author} via /role all")
+                added += 1
+            except discord.HTTPException:
+                failed += 1
+
+        msg = (
+                f"✅ Gave {role.mention} to **{added}** member(s). "
+                f"{skipped} already had it"
+                + (f", **{failed}** failed." if failed else ".")
+        )
+        try:
+            await ctx.respond(msg, allowed_mentions=discord.AllowedMentions.none())
+        except discord.HTTPException:
+            await ctx.channel.send(msg, allowed_mentions=discord.AllowedMentions.none())
+
+    @role_group.command(name="list", description="Display all roles and their IDs")
+    @is_staff()
+    async def role_list(self, ctx):
+        roles = sorted(ctx.guild.roles, key=lambda r: r.position, reverse=True)
+
+        lines = [f"{r.mention} — `{r.id}`" for r in roles]
+        description = "\n".join(lines)
+
+        if len(description) <= 4000:
+            embed = discord.Embed(
+                title=f"🏷️ Roles in {ctx.guild.name}",
+                description=description,
+                color=discord.Color.blurple()
+            )
+            embed.set_footer(text=f"{len(roles)} role(s)")
+            await ctx.respond(embed=embed, ephemeral=True)
+            return
+
+        content = "\n".join(f"{r.name} — {r.id}" for r in roles)
+        file = discord.File(fp=io.BytesIO(content.encode("utf-8")), filename="roles.txt")
+        await ctx.respond(f"🏷️ {len(roles)} role(s) in {ctx.guild.name}:", file=file, ephemeral=True)
 
     # ---------- system administration ----------
     # Configured for Alpine Linux! May need to be changed for other environments.
