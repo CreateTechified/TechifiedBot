@@ -402,7 +402,7 @@ class SlashCommands(commands.Cog):
         who = "You have" if target == ctx.author else f"{target.display_name} has"
         await ctx.respond(f"📦 {who} used **{used_mb:.2f} MB** of the **{limit_mb:.0f} MB** tag storage limit.")
 
-    # ---------- /forcetag ----------
+    # ---------- forcetag ----------
 
     forcetag_group = SlashCommandGroup("forcetag", "Forcefully remove or overwrite any tag (staff only)")
 
@@ -657,6 +657,73 @@ class SlashCommands(commands.Cog):
             return
 
         await ctx.respond(f"🔨 {member.mention} has been banned. Reason: {reason}")
+
+    # ---------- role management ----------
+
+    add_group = SlashCommandGroup("add", "Add things to members (admin only)")
+    remove_group = SlashCommandGroup("remove", "Remove things from members (admin only)")
+
+    @staticmethod
+    def _role_problem(ctx, role: discord.Role):
+        if role.is_default():
+            return "❌ You can't use @everyone."
+        if role.managed:
+            return "❌ That role is managed by an integration or bot and can't be assigned manually."
+        if role >= ctx.guild.me.top_role:
+            return "❌ That role is higher than (or equal to) my highest role, so I can't manage it."
+        return None
+
+    @add_group.command(name="role", description="Give a role to a member")
+    @is_admin()
+    async def add_role(
+        self, ctx,
+        member: Option(discord.Member, "Member to give the role to"),
+        role: Option(discord.Role, "Role to give"),
+    ):
+        problem = self._role_problem(ctx, role)
+        if problem:
+            await ctx.respond(problem, ephemeral=True)
+            return
+
+        if role in member.roles:
+            await ctx.respond(f"⚠️ {member.mention} already has {role.mention}.",
+                              ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+            return
+
+        try:
+            await member.add_roles(role, reason=f"Added by {ctx.author} via /add role")
+        except discord.Forbidden:
+            await ctx.respond("❌ I don't have permission to do that.", ephemeral=True)
+            return
+
+        await ctx.respond(f"✅ Gave {role.mention} to {member.mention}.",
+                          allowed_mentions=discord.AllowedMentions.none())
+
+    @remove_group.command(name="role", description="Take a role away from a member")
+    @is_admin()
+    async def remove_role(
+        self, ctx,
+        member: Option(discord.Member, "Member to remove the role from"),
+        role: Option(discord.Role, "Role to remove"),
+    ):
+        problem = self._role_problem(ctx, role)
+        if problem:
+            await ctx.respond(problem, ephemeral=True)
+            return
+
+        if role not in member.roles:
+            await ctx.respond(f"⚠️ {member.mention} doesn't have {role.mention}.",
+                              ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+            return
+
+        try:
+            await member.remove_roles(role, reason=f"Removed by {ctx.author} via /remove role")
+        except discord.Forbidden:
+            await ctx.respond("❌ I don't have permission to do that.", ephemeral=True)
+            return
+
+        await ctx.respond(f"✅ Removed {role.mention} from {member.mention}.",
+                          allowed_mentions=discord.AllowedMentions.none())
 
     # ---------- system administration ----------
     # Configured for Alpine Linux! May need to be changed for other environments.

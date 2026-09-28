@@ -121,6 +121,16 @@ async def setup_database(bot):
         except aiosqlite.OperationalError:
             pass
 
+    await bot.tag_db.execute(
+        """CREATE TABLE IF NOT EXISTS auto_replies (
+            guild INTEGER NOT NULL,
+            trigger_text TEXT NOT NULL,
+            reply_text TEXT NOT NULL,
+            creator INTEGER NOT NULL,
+            UNIQUE(guild, trigger_text)
+        )"""
+    )
+
     await bot.tag_db.commit()
 
 async def register_persistent_views(bot):
@@ -154,6 +164,7 @@ async def main():
         bot.load_extension('server_cog')
         bot.load_extension('slash_cog')
         bot.load_extension('automod_cog')
+        bot.load_extension('wss_cog')
 
         await register_tag_command_aliases(bot)
 
