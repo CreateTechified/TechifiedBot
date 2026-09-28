@@ -4,6 +4,8 @@ import io
 import json
 import os
 
+from page_embeds import send_paged
+
 TAG_FILES_DIR = "tag_files"
 VALID_NAME_CHARS = set("0123456789abcdefghijklmnopqrstuvwxyz_-")
 
@@ -435,15 +437,12 @@ class TagSystem(commands.Cog):
             await ctx.send(f"{who} created any tags in this server yet.")
             return
 
-        names = ", ".join(f"`{row[0]}`" for row in rows)
         possessive = "Your" if target == ctx.author else f"{target.display_name}'s"
-        embed = discord.Embed(
-            title=f"📑 {possessive} tags in {ctx.guild.name}",
-            description=names,
-            color=discord.Color.blurple()
+        await send_paged(
+            ctx, f"📑 {possessive} tags in {ctx.guild.name}",
+            [f"`{row[0]}`" for row in rows],
+            discord.Color.blurple(), noun="tag(s)"
         )
-        embed.set_footer(text=f"{len(rows)} tag(s)")
-        await ctx.send(embed=embed)
 
     @tag.command(name="listall")
     async def tag_listall(self, ctx):
@@ -456,14 +455,11 @@ class TagSystem(commands.Cog):
             await ctx.send("No tags exist in this server yet.")
             return
 
-        names = ", ".join(f"`{row[0]}`" for row in rows)
-        embed = discord.Embed(
-            title=f"📑 All tags in {ctx.guild.name}",
-            description=names,
-            color=discord.Color.blurple()
+        await send_paged(
+            ctx, f"📑 All tags in {ctx.guild.name}",
+            [f"`{row[0]}`" for row in rows],
+            discord.Color.blurple(), noun="tag(s)"
         )
-        embed.set_footer(text=f"{len(rows)} tag(s)")
-        await ctx.send(embed=embed)
 
     @tag.command(name="listlog")
     async def tag_log(self, ctx):

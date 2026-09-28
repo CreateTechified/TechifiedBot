@@ -5,6 +5,7 @@ from discord.ext import commands
 from discord.commands import SlashCommandGroup, Option
 
 from slash_cog import is_admin
+from page_embeds import send_paged
 
 MAX_TRIGGER_LENGTH = 100
 MAX_REPLY_LENGTH = 2000
@@ -104,17 +105,11 @@ class AutoReply(commands.Cog):
             await ctx.respond("No auto-reply triggers exist in this server yet.", ephemeral=True)
             return
 
-        names = ", ".join(f"`{row[0]}`" for row in rows)
-        if len(names) > 4000:
-            names = names[:4000].rsplit(", ", 1)[0] + ", ... (use `/wss listlog` for the full list)"
-
-        embed = discord.Embed(
-            title=f"💬 Auto-reply triggers in {ctx.guild.name}",
-            description=names,
-            color=discord.Color.blurple()
+        await send_paged(
+            ctx, f"💬 Auto-reply triggers in {ctx.guild.name}",
+            [f"`{row[0]}`" for row in rows],
+            discord.Color.blurple(), noun="trigger(s)"
         )
-        embed.set_footer(text=f"{len(rows)} trigger(s)")
-        await ctx.respond(embed=embed)
 
     @wss_group.command(name="listlog", description="Get every trigger and its reply as a downloadable .txt file")
     @is_admin()

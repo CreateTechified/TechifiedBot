@@ -10,6 +10,7 @@ import json
 import os
 
 from tag_cog import TagReportView, VALID_NAME_CHARS
+from page_embeds import send_paged
 
 TAG_FILES_DIR = "tag_files"
 TAG_REPORT_CHANNEL_ID = 1542180741092347954
@@ -338,15 +339,12 @@ class SlashCommands(commands.Cog):
             await ctx.respond(f"{who} created any tags in this server yet.", ephemeral=True)
             return
 
-        names = ", ".join(f"`{row[0]}`" for row in rows)
         possessive = "Your" if target == ctx.author else f"{target.display_name}'s"
-        embed = discord.Embed(
-            title=f"📑 {possessive} tags in {ctx.guild.name}",
-            description=names,
-            color=discord.Color.blurple()
+        await send_paged(
+            ctx, f"📑 {possessive} tags in {ctx.guild.name}",
+            [f"`{row[0]}`" for row in rows],
+            discord.Color.blurple(), noun="tag(s)"
         )
-        embed.set_footer(text=f"{len(rows)} tag(s)")
-        await ctx.respond(embed=embed)
 
     @tag_group.command(name="listall", description="List every tag in the server")
     @is_staff()
@@ -360,14 +358,11 @@ class SlashCommands(commands.Cog):
             await ctx.respond("No tags exist in this server yet.", ephemeral=True)
             return
 
-        names = ", ".join(f"`{row[0]}`" for row in rows)
-        embed = discord.Embed(
-            title=f"📑 All tags in {ctx.guild.name}",
-            description=names,
-            color=discord.Color.blurple()
+        await send_paged(
+            ctx, f"📑 All tags in {ctx.guild.name}",
+            [f"`{row[0]}`" for row in rows],
+            discord.Color.blurple(), noun="tag(s)"
         )
-        embed.set_footer(text=f"{len(rows)} tag(s)")
-        await ctx.respond(embed=embed)
 
     @tag_group.command(name="listlog", description="Get every tag name in the server as a downloadable .txt file")
     @is_staff()
@@ -769,18 +764,16 @@ class SlashCommands(commands.Cog):
     async def role_list(self, ctx):
         roles = sorted(ctx.guild.roles, key=lambda r: r.position, reverse=True)
 
-        lines = [f"{r.mention} — `{r.id}`" for r in roles]
-        description = "\n".join(lines)
+        await send_paged(
+            ctx, f"🏷️ Roles in {ctx.guild.name}",
+            [f"{r.mention} — `{r.id}`" for r in roles],
+            discord.Color.blurple(), noun="role(s)", ephemeral=True
+        )
 
-        if len(description) <= 4000:
-            embed = discord.Embed(
-                title=f"🏷️ Roles in {ctx.guild.name}",
-                description=description,
-                color=discord.Color.blurple()
-            )
-            embed.set_footer(text=f"{len(roles)} role(s)")
-            await ctx.respond(embed=embed, ephemeral=True)
-            return
+    @role_group.command(name="listlog", description="Get every role and its ID as a downloadable .txt file")
+    @is_staff()
+    async def role_listlog(self, ctx):
+        roles = sorted(ctx.guild.roles, key=lambda r: r.position, reverse=True)
 
         content = "\n".join(f"{r.name} — {r.id}" for r in roles)
         file = discord.File(fp=io.BytesIO(content.encode("utf-8")), filename="roles.txt")

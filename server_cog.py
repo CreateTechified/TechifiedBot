@@ -6,6 +6,8 @@ import requests
 from discord.ext import commands
 from discord.commands import SlashCommandGroup, Option
 
+from page_embeds import send_paged
+
 ADMIN_ROLE_ID = 1222456633511378965
 MODERATOR_ROLE_ID = 1421877616272605326
 OWNER_ROLE_ID = 1286650794053210122
@@ -72,15 +74,15 @@ class ServerManagement(commands.Cog):
             return
 
         usernames = [player["name"] for player in whitelist if "name" in player]
-        names = ", ".join(f"`{player}`" for player in usernames) if usernames else "*No players whitelisted.*"
+        if not usernames:
+            await ctx.respond("*No players whitelisted.*")
+            return
 
-        embed = discord.Embed(
-            title="📑 All whitelisted players",
-            description=names,
-            color=discord.Color.blurple()
+        await send_paged(
+            ctx, "📑 All whitelisted players",
+            [f"`{name}`" for name in usernames],
+            discord.Color.blurple(), noun="player(s)"
         )
-        embed.set_footer(text=f"{len(whitelist)} player(s)")
-        await ctx.respond(embed=embed)
 
     @whitelist_group.command(name="add", description="Add a player to the whitelist")
     @is_staff()
