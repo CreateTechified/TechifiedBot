@@ -1,3 +1,5 @@
+import os
+import random
 from datetime import timedelta
 
 import discord
@@ -14,6 +16,11 @@ STREAK_THRESHOLD = 5
 STREAK_WINDOW_SECONDS = 5 * 60
 BASE_RESTRICTION_MINUTES = 30
 MAX_RESTRICTION_MINUTES = 28 * 24 * 60
+
+MESSAGES_DIR = "larp_messages"
+SAY_MESSAGES_FILE = os.path.join(MESSAGES_DIR, "say.txt")
+RESTRICT_MESSAGES_FILE = os.path.join(MESSAGES_DIR, "restrict.txt")
+DELETE_MESSAGES_FILE = os.path.join(MESSAGES_DIR, "delete.txt")
 
 
 def is_staff():
@@ -43,6 +50,25 @@ def format_duration(minutes: int) -> str:
     return f"{days} day(s)" + (f" {rem_hours} hour(s)" if rem_hours else "")
 
 
+def _load_lines(path):
+    """Returns each non-empty line in the file, or [] if it's missing/empty."""
+    if not os.path.isfile(path):
+        return []
+    with open(path, encoding="utf-8") as f:
+        return [line.strip() for line in f if line.strip()]
+
+
+def _pick_message(path, default, **kwargs):
+    """Picks a random line from the file (formatted with kwargs), or falls back to `default`."""
+    lines = _load_lines(path)
+    template = random.choice(lines) if lines else default
+    try:
+        return template.format(**kwargs)
+    except (KeyError, IndexError):
+        # Bad placeholder in the custom file - send it raw rather than crashing.
+        return template
+
+
 class LarpBoard(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -58,6 +84,14 @@ class LarpBoard(commands.Cog):
             (guild_id, user_id)
         )
         await self.bot.tag_db.commit()
+
+    async def _get_points(self, guild_id: int, user_id: int) -> int:
+        async with self.bot.tag_db.execute(
+            "SELECT points FROM larp_scores WHERE guild = ? AND user_id = ?",
+            (guild_id, user_id)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return row[0] if row else 0
 
     async def _get_state(self, guild_id: int, user_id: int):
         async with self.bot.tag_db.execute(
@@ -105,14 +139,21 @@ class LarpBoard(commands.Cog):
         )
         await self.bot.tag_db.commit()
 
+        default = (
+            f"🛑 {message.author.mention} said **LARP** {STREAK_THRESHOLD} times in a row in under "
+            f"{STREAK_WINDOW_SECONDS // 60} minutes! They can't say it again for "
+            f"**{format_duration(minutes)}** (offense #{offense_count}). Any message with 'larp' will "
+            f"be deleted until then."
+        )
+        text = _pick_message(
+            RESTRICT_MESSAGES_FILE, default,
+            mention=message.author.mention, duration=format_duration(minutes),
+            offense=offense_count, threshold=STREAK_THRESHOLD,
+            window=STREAK_WINDOW_SECONDS // 60
+        )
+
         try:
-            await message.channel.send(
-                f"🛑 {message.author.mention} said **LARP** {STREAK_THRESHOLD} times in a row in under "
-                f"{STREAK_WINDOW_SECONDS // 60} minutes! They can't say it again for "
-                f"**{format_duration(minutes)}** (offense #{offense_count}). Any message with 'larp' will "
-                f"be deleted until then.",
-                allowed_mentions=discord.AllowedMentions.none()
-            )
+            await message.channel.send(text, allowed_mentions=discord.AllowedMentions.none())
         except discord.HTTPException:
             pass
 
@@ -137,11 +178,19 @@ class LarpBoard(commands.Cog):
                         await message.delete()
                     except discord.HTTPException:
                         pass
+
+                    default = (
+                        f"🚫 {message.author.mention}, you're LARP-restricted "
+                        f"({discord.utils.format_dt(until, style='R')}). That message was deleted."
+                    )
+                    text = _pick_message(
+                        DELETE_MESSAGES_FILE, default,
+                        mention=message.author.mention,
+                        until=discord.utils.format_dt(until, style='R')
+                    )
                     try:
                         await message.channel.send(
-                            f"🚫 {message.author.mention}, you're LARP-restricted "
-                            f"({discord.utils.format_dt(until, style='R')}). That message was deleted.",
-                            delete_after=8, allowed_mentions=discord.AllowedMentions.none()
+                            text, delete_after=8, allowed_mentions=discord.AllowedMentions.none()
                         )
                     except discord.HTTPException:
                         pass
@@ -165,6 +214,17 @@ class LarpBoard(commands.Cog):
             await self._apply_restriction(message, offense_count + 1)
         else:
             await self._update_streak(guild_id, user_id, new_streak, now.isoformat())
+
+            points = await self._get_points(guild_id, user_id)
+            default = f"🎭 {message.author.mention} said **LARP**! (**{points}** total)"
+            text = _pick_message(
+                SAY_MESSAGES_FILE, default,
+                mention=message.author.mention, points=points
+            )
+            try:
+                await message.channel.send(text, allowed_mentions=discord.AllowedMentions.none())
+            except discord.HTTPException:
+                pass
 
     # ---------- commands ----------
 
@@ -199,16 +259,9 @@ class LarpBoard(commands.Cog):
         member: Option(discord.Member, "Member to check (defaults to yourself)", required=False, default=None),
     ):
         target = member or ctx.author
-
-        async with self.bot.tag_db.execute(
-            "SELECT points FROM larp_scores WHERE guild = ? AND user_id = ?",
-            (ctx.guild.id, target.id)
-        ) as cursor:
-            row = await cursor.fetchone()
-
-        points = row[0] if row else 0
+        points = await self._get_points(ctx.guild.id, target.id)
         who = "You have" if target == ctx.author else f"{target.display_name} has"
-        await ctx.respond(f"🎭 {who} said **LARP** {points} time(s).", allowed_mentions=discord.AllowedMentions.none())
+        await ctx.respond(f"🎭 {who} **LARPED** {points} time(s).", allowed_mentions=discord.AllowedMentions.none())
 
     @larp_group.command(name="reset", description="Wipe a member's LARP points and offense history (staff only)")
     @is_staff()
