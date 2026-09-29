@@ -140,7 +140,7 @@ class LarpBoard(commands.Cog):
         await self.bot.tag_db.commit()
 
         default = (
-            f"🛑 {message.author.mention} said **LARP** {STREAK_THRESHOLD} times in a row in under "
+            f"🛑 {message.author.mention} **LARPED** {STREAK_THRESHOLD} times in a row in under "
             f"{STREAK_WINDOW_SECONDS // 60} minutes! They can't say it again for "
             f"**{format_duration(minutes)}** (offense #{offense_count}). Any message with 'larp' will "
             f"be deleted until then."
@@ -216,7 +216,7 @@ class LarpBoard(commands.Cog):
             await self._update_streak(guild_id, user_id, new_streak, now.isoformat())
 
             points = await self._get_points(guild_id, user_id)
-            default = f"🎭 {message.author.mention} said **LARP**! (**{points}** total)"
+            default = f"🎭 {message.author.mention} **LARPED**! They have larped **{points}** times now!"
             text = _pick_message(
                 SAY_MESSAGES_FILE, default,
                 mention=message.author.mention, points=points
@@ -228,7 +228,7 @@ class LarpBoard(commands.Cog):
 
     # ---------- commands ----------
 
-    @larp_group.command(name="leaderboard", description="See who has said LARP the most")
+    @larp_group.command(name="leaderboard", description="See who larped the most")
     async def larp_leaderboard(self, ctx):
         async with self.bot.tag_db.execute(
             "SELECT user_id, points FROM larp_scores WHERE guild = ? ORDER BY points DESC LIMIT 10",
@@ -237,7 +237,7 @@ class LarpBoard(commands.Cog):
             rows = await cursor.fetchall()
 
         if not rows:
-            await ctx.respond("No one has said LARP yet. 👀")
+            await ctx.respond("No one has larped yet :D")
             return
 
         medals = ["🥇", "🥈", "🥉"]
@@ -253,7 +253,7 @@ class LarpBoard(commands.Cog):
         )
         await ctx.respond(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
-    @larp_group.command(name="score", description="Check how many times someone has said LARP")
+    @larp_group.command(name="score", description="Check how many times someone has LARPED")
     async def larp_score(
         self, ctx,
         member: Option(discord.Member, "Member to check (defaults to yourself)", required=False, default=None),
