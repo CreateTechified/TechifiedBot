@@ -66,7 +66,7 @@ class AFK(commands.Cog):
     ):
         since = await self._go_afk(ctx.author, afk_message.strip() or "AFK")
         await ctx.respond(
-            f"You're now AFK: `{afk_message}` - since {discord.utils.format_dt(since, style='R')}",
+            f"You're now AFK: {afk_message} - since {discord.utils.format_dt(since, style='R')}",
             allowed_mentions=discord.AllowedMentions.none()
         )
 
@@ -74,7 +74,7 @@ class AFK(commands.Cog):
     async def afk_prefix(self, ctx, *, message: str = "AFK"):
         since = await self._go_afk(ctx.author, message.strip() or "AFK")
         await ctx.send(
-            f"You're now AFK: `{message}` - since {discord.utils.format_dt(since, style='R')}",
+            f"You're now AFK: {message} - since {discord.utils.format_dt(since, style='R')}",
             allowed_mentions=discord.AllowedMentions.none()
         )
 
@@ -119,7 +119,7 @@ class AFK(commands.Cog):
             afk_message, since_str, _, _ = m_row
             since_dt = discord.utils.parse_time(since_str)
             since_text = discord.utils.format_dt(since_dt, style="R") if since_dt else "some time ago"
-            lines.append(f"💤 `{mentioned.display_name}` is AFK: `{afk_message}` - since {since_text}")
+            lines.append(f"💤 `{mentioned.display_name}` is AFK: {afk_message} - since {since_text}")
 
         if lines:
             try:
