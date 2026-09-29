@@ -131,6 +131,58 @@ async def setup_database(bot):
         )"""
     )
 
+    await bot.tag_db.execute(
+        """CREATE TABLE IF NOT EXISTS mc_servers (
+            guild INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            host TEXT NOT NULL,
+            port INTEGER NOT NULL DEFAULT 25565,
+            creator INTEGER NOT NULL,
+            UNIQUE(guild, name)
+        )"""
+    )
+
+    await bot.tag_db.execute(
+        """CREATE TABLE IF NOT EXISTS larp_scores (
+            guild INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            points INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (guild, user_id)
+        )"""
+    )
+
+    await bot.tag_db.execute(
+        """CREATE TABLE IF NOT EXISTS larp_timeouts (
+            guild INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            until TEXT,
+            offense_count INTEGER NOT NULL DEFAULT 0,
+            streak_count INTEGER NOT NULL DEFAULT 0,
+            last_larp_at TEXT,
+            PRIMARY KEY (guild, user_id)
+        )"""
+    )
+    for migration in (
+        "ALTER TABLE larp_timeouts ADD COLUMN streak_count INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE larp_timeouts ADD COLUMN last_larp_at TEXT",
+    ):
+        try:
+            await bot.tag_db.execute(migration)
+        except aiosqlite.OperationalError:
+            pass
+
+    await bot.tag_db.execute(
+        """CREATE TABLE IF NOT EXISTS afk_status (
+            guild INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            message TEXT NOT NULL,
+            since TEXT NOT NULL,
+            original_nick TEXT,
+            tagged_nick TEXT NOT NULL,
+            PRIMARY KEY (guild, user_id)
+        )"""
+    )
+
     await bot.tag_db.commit()
 
 async def register_persistent_views(bot):
@@ -165,6 +217,9 @@ async def main():
         bot.load_extension('slash_cog')
         bot.load_extension('automod_cog')
         bot.load_extension('wss_cog')
+        bot.load_extension('larp_cog')
+        bot.load_extension('utility_cog')
+        bot.load_extension('afk_cog')
 
         await register_tag_command_aliases(bot)
 

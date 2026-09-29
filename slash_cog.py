@@ -17,6 +17,8 @@ TAG_REPORT_CHANNEL_ID = 1542180741092347954
 TAG_DELETE_NOTIFY_CHANNEL_ID = 1436518560964022363
 REPORTED_WARNING = "⚠️ **This Tag has been reported for potential rule violations**"
 
+ADMIN_LOG_CHANNEL_ID = 1472650884906221771
+
 ADMIN_ROLE_ID = 1222456633511378965
 MODERATOR_ROLE_ID = 1421877616272605326
 OWNER_ROLE_ID = 1286650794053210122
@@ -145,6 +147,35 @@ class SlashCommands(commands.Cog):
         if ADMIN_ROLE_ID in target_role_ids and not (author_role_ids & {ADMIN_ROLE_ID, OWNER_ROLE_ID}):
             return "❌ You can't moderate an admin."
         return None
+
+    async def _log_action(self, ctx, title, color, target=None, reason=None, extra_fields=None):
+        log_channel = self.bot.get_channel(ADMIN_LOG_CHANNEL_ID)
+        if log_channel is None:
+            return
+
+        embed = discord.Embed(title=title, color=color, timestamp=discord.utils.utcnow())
+        embed.add_field(name="Moderator", value=f"{ctx.author.mention} (`{ctx.author.id}`)", inline=False)
+
+        if target is not None:
+            target_id = getattr(target, "id", None)
+            target_display = getattr(target, "mention", None) or f"`{target}`"
+            value = target_display + (f" (`{target_id}`)" if target_id is not None else "")
+            embed.add_field(name="Target", value=value, inline=False)
+
+        if reason:
+            embed.add_field(name="Reason", value=reason, inline=False)
+
+        if extra_fields:
+            for name, value in extra_fields.items():
+                embed.add_field(name=name, value=value, inline=False)
+
+        channel_name = getattr(ctx.channel, "name", None)
+        embed.set_footer(text=f"in #{channel_name}" if channel_name else "")
+
+        try:
+            await log_channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        except discord.HTTPException:
+            pass
 
     # ---------- /tag (staff-only mirrors of the . commands) ----------
 
@@ -523,6 +554,7 @@ class SlashCommands(commands.Cog):
             pass
 
         await ctx.respond(f"⚠️ {member.mention} has been warned. Reason: {reason}")
+        await self._log_action(ctx, "⚠️ Member Warned", discord.Color.orange(), target=member, reason=reason)
 
     @warn_group.command(name="history", description="View a member's warning history")
     @is_staff()
@@ -533,7 +565,7 @@ class SlashCommands(commands.Cog):
         await ctx.defer()
 
         async with self.bot.tag_db.execute(
-            "SELECT moderator_id, reason, timestamp FROM warnings "
+            "SELECT id, moderator_id, reason, timestamp FROM warnings "
             "WHERE guild = ? AND user_id = ? ORDER BY timestamp DESC LIMIT 25",
             (ctx.guild.id, member.id)
         ) as cursor:
@@ -547,7 +579,7 @@ class SlashCommands(commands.Cog):
             title=f"⚠️ Warning history for {member.display_name}",
             color=discord.Color.orange()
         )
-        for i, (moderator_id, reason, timestamp) in enumerate(rows, start=1):
+        for i, (warning_id, moderator_id, reason, timestamp) in enumerate(rows, start=1):
             try:
                 when = discord.utils.parse_time(timestamp)
                 when_str = discord.utils.format_dt(when, style="R") if when else timestamp
@@ -555,13 +587,61 @@ class SlashCommands(commands.Cog):
                 when_str = timestamp
 
             embed.add_field(
-                name=f"#{i} — {when_str}",
+                name=f"#{i} • ID `{warning_id}` — {when_str}",
                 value=f"**Reason:** {reason or 'No reason provided'}\n**By:** <@{moderator_id}>",
                 inline=False
             )
-        embed.set_footer(text=f"{len(rows)} warning(s) shown (max 25)")
+        embed.set_footer(text=f"{len(rows)} warning(s) shown (max 25) • use /warn remove <ID> to delete one")
 
         await ctx.respond(embed=embed)
+
+    @warn_group.command(name="remove", description="Remove a specific warning by its ID (check /warn history)")
+    @is_staff()
+    async def warn_remove(
+        self, ctx,
+        warning_id: Option(int, "The warning ID, shown in /warn history"),
+    ):
+        async with self.bot.tag_db.execute(
+            "SELECT user_id FROM warnings WHERE id = ? AND guild = ?",
+            (warning_id, ctx.guild.id)
+        ) as cursor:
+            row = await cursor.fetchone()
+
+        if row is None:
+            await ctx.respond(f"❌ No warning with ID `{warning_id}` found in this server.", ephemeral=True)
+            return
+
+        await self.bot.tag_db.execute("DELETE FROM warnings WHERE id = ?", (warning_id,))
+        await self.bot.tag_db.commit()
+
+        await ctx.respond(f"✅ Warning `{warning_id}` removed (was for <@{row[0]}>).")
+        await self._log_action(
+            ctx, "🗑️ Warning Removed", discord.Color.light_grey(),
+            extra_fields={"Warning ID": f"`{warning_id}`", "Was for": f"<@{row[0]}>"}
+        )
+
+    @warn_group.command(name="clear", description="Clear all warnings for a member")
+    @is_staff()
+    async def warn_clear(
+        self, ctx,
+        member: Option(discord.Member, "Member whose warnings to clear"),
+    ):
+        cursor = await self.bot.tag_db.execute(
+            "DELETE FROM warnings WHERE guild = ? AND user_id = ?", (ctx.guild.id, member.id)
+        )
+        await self.bot.tag_db.commit()
+        removed = cursor.rowcount
+        await cursor.close()
+
+        if not removed:
+            await ctx.respond(f"✅ {member.mention} has no warnings to clear.", ephemeral=True)
+            return
+
+        await ctx.respond(f"✅ Cleared **{removed}** warning(s) for {member.mention}.")
+        await self._log_action(
+            ctx, "🗑️ Warnings Cleared", discord.Color.light_grey(),
+            target=member, extra_fields={"Warnings removed": str(removed)}
+        )
 
     @discord.slash_command(name="mute", description="Voice-mute or unmute a member (they can still type)")
     @is_staff()
@@ -584,6 +664,10 @@ class SlashCommands(commands.Cog):
 
         action = "voice-muted" if state else "voice-unmuted"
         await ctx.respond(f"🔇 {member.mention} has been {action}." + (f" Reason: {reason}" if reason else ""))
+        await self._log_action(
+            ctx, f"🔇 Member {'Voice-Muted' if state else 'Voice-Unmuted'}",
+            discord.Color.dark_grey(), target=member, reason=reason
+        )
 
     @discord.slash_command(name="timeout", description="Timeout a member (full communication block) or clear it")
     @is_staff()
@@ -602,12 +686,17 @@ class SlashCommands(commands.Cog):
             if duration_minutes <= 0:
                 await member.timeout(None, reason=reason)
                 await ctx.respond(f"⏱️ Timeout removed for {member.mention}.")
+                await self._log_action(ctx, "⏱️ Timeout Removed", discord.Color.dark_grey(), target=member, reason=reason)
             else:
                 until = discord.utils.utcnow() + timedelta(minutes=duration_minutes)
                 await member.timeout(until, reason=reason)
                 await ctx.respond(
                     f"⏱️ {member.mention} has been timed out for {duration_minutes} minute(s)."
                     + (f" Reason: {reason}" if reason else "")
+                )
+                await self._log_action(
+                    ctx, "⏱️ Member Timed Out", discord.Color.gold(), target=member, reason=reason,
+                    extra_fields={"Duration": f"{duration_minutes} minute(s)"}
                 )
         except discord.Forbidden:
             await ctx.respond("❌ I don't have permission to do that.", ephemeral=True)
@@ -631,6 +720,7 @@ class SlashCommands(commands.Cog):
             return
 
         await ctx.respond(f"👢 {member.mention} has been kicked. Reason: {reason}")
+        await self._log_action(ctx, "👢 Member Kicked", discord.Color.orange(), target=member, reason=reason)
 
     @discord.slash_command(name="ban", description="Ban a member")
     @is_staff()
@@ -652,6 +742,126 @@ class SlashCommands(commands.Cog):
             return
 
         await ctx.respond(f"🔨 {member.mention} has been banned. Reason: {reason}")
+        await self._log_action(ctx, "🔨 Member Banned", discord.Color.dark_red(), target=member, reason=reason)
+
+    @discord.slash_command(name="unban", description="Unban a user by ID or exact username")
+    @is_staff()
+    async def unban(
+        self, ctx,
+        user: Option(str, "User ID (preferred) or exact username"),
+        reason: Option(str, "Reason", required=False, default=None),
+    ):
+        await ctx.defer()
+
+        target_user = None
+
+        if user.isdigit():
+            try:
+                ban_entry = await ctx.guild.fetch_ban(discord.Object(id=int(user)))
+                target_user = ban_entry.user
+            except discord.NotFound:
+                target_user = None
+
+        if target_user is None:
+            async for entry in ctx.guild.bans():
+                if entry.user.name == user or str(entry.user) == user:
+                    target_user = entry.user
+                    break
+
+        if target_user is None:
+            await ctx.respond(f"❌ Couldn't find a ban matching `{user}`.")
+            return
+
+        try:
+            await ctx.guild.unban(target_user, reason=reason)
+        except discord.Forbidden:
+            await ctx.respond("❌ I don't have permission to do that.", ephemeral=True)
+            return
+
+        await ctx.respond(f"🔓 Unbanned `{target_user}`." + (f" Reason: {reason}" if reason else ""))
+        await self._log_action(ctx, "🔓 Member Unbanned", discord.Color.green(), target=target_user, reason=reason)
+
+    @discord.slash_command(name="purge", description="Bulk-delete recent messages in this channel")
+    @is_staff()
+    async def purge(
+        self, ctx,
+        amount: Option(int, "Number of messages to delete (1-100)", min_value=1, max_value=100),
+        member: Option(discord.Member, "Only delete messages from this member", required=False, default=None),
+    ):
+        await ctx.defer(ephemeral=True)
+
+        def check(m):
+            return member is None or m.author.id == member.id
+
+        try:
+            deleted = await ctx.channel.purge(limit=amount, check=check)
+        except discord.Forbidden:
+            await ctx.respond("❌ I don't have permission to delete messages here.", ephemeral=True)
+            return
+        except discord.HTTPException:
+            await ctx.respond("❌ Failed to delete messages (they might be older than 14 days).", ephemeral=True)
+            return
+
+        who = f" from {member.mention}" if member else ""
+        await ctx.respond(
+            f"🧹 Deleted **{len(deleted)}** message(s){who}.",
+            ephemeral=True, allowed_mentions=discord.AllowedMentions.none()
+        )
+        extra = {"Channel": ctx.channel.mention, "Messages deleted": str(len(deleted))}
+        if member:
+            extra["Filtered to"] = member.mention
+        await self._log_action(ctx, "🧹 Messages Purged", discord.Color.light_grey(), extra_fields=extra)
+
+    @discord.slash_command(name="slowmode", description="Set slowmode for this channel (0 to disable)")
+    @is_staff()
+    async def slowmode(
+        self, ctx,
+        seconds: Option(int, "Slowmode delay in seconds (0-21600)", min_value=0, max_value=21600),
+    ):
+        try:
+            await ctx.channel.edit(slowmode_delay=seconds)
+        except discord.Forbidden:
+            await ctx.respond("❌ I don't have permission to do that.", ephemeral=True)
+            return
+
+        if seconds == 0:
+            await ctx.respond("🐇 Slowmode disabled for this channel.")
+        else:
+            await ctx.respond(f"🐌 Slowmode set to **{seconds}** second(s) for this channel.")
+
+    @discord.slash_command(name="lock", description="Lock this channel (stop @everyone from sending messages)")
+    @is_staff()
+    async def lock(self, ctx, reason: Option(str, "Reason", required=False, default=None)):
+        overwrite = ctx.channel.overwrites_for(ctx.guild.default_role)
+        overwrite.send_messages = False
+        try:
+            await ctx.channel.set_permissions(ctx.guild.default_role, overwrite=overwrite, reason=reason)
+        except discord.Forbidden:
+            await ctx.respond("❌ I don't have permission to do that.", ephemeral=True)
+            return
+
+        await ctx.respond("🔒 This channel has been locked." + (f" Reason: {reason}" if reason else ""))
+        await self._log_action(
+            ctx, "🔒 Channel Locked", discord.Color.red(), reason=reason,
+            extra_fields={"Channel": ctx.channel.mention}
+        )
+
+    @discord.slash_command(name="unlock", description="Unlock this channel (restore @everyone's ability to send messages)")
+    @is_staff()
+    async def unlock(self, ctx):
+        overwrite = ctx.channel.overwrites_for(ctx.guild.default_role)
+        overwrite.send_messages = None
+        try:
+            await ctx.channel.set_permissions(ctx.guild.default_role, overwrite=overwrite)
+        except discord.Forbidden:
+            await ctx.respond("❌ I don't have permission to do that.", ephemeral=True)
+            return
+
+        await ctx.respond("🔓 This channel has been unlocked.")
+        await self._log_action(
+            ctx, "🔓 Channel Unlocked", discord.Color.green(),
+            extra_fields={"Channel": ctx.channel.mention}
+        )
 
     # ---------- role management ----------
 
@@ -859,6 +1069,44 @@ class SlashCommands(commands.Cog):
         member: Option(discord.Member, "Member to kill"),
     ):
         await ctx.respond(f"{ctx.author.mention} just killed {member.mention}!")
+
+    @discord.slash_command(name="userinfo", description="Show info about a member")
+    @is_staff()
+    async def userinfo(
+        self, ctx,
+        member: Option(discord.Member, "Member to look up (defaults to yourself)", required=False, default=None),
+    ):
+        target = member or ctx.author
+        await ctx.defer()
+
+        async with self.bot.tag_db.execute(
+            "SELECT COUNT(*) FROM warnings WHERE guild = ? AND user_id = ?", (ctx.guild.id, target.id)
+        ) as cursor:
+            warning_count = (await cursor.fetchone())[0]
+
+        async with self.bot.tag_db.execute(
+            "SELECT COUNT(*) FROM tags WHERE guild = ? AND creator = ?", (ctx.guild.id, target.id)
+        ) as cursor:
+            tag_count = (await cursor.fetchone())[0]
+
+        roles = [r.mention for r in sorted(target.roles, key=lambda r: r.position, reverse=True) if not r.is_default()]
+
+        embed = discord.Embed(
+            title=f"👤 {target.display_name}",
+            color=target.color if target.color.value else discord.Color.blurple()
+        )
+        embed.set_thumbnail(url=target.display_avatar.url)
+        embed.add_field(name="Username", value=str(target), inline=True)
+        embed.add_field(name="ID", value=f"`{target.id}`", inline=True)
+        embed.add_field(name="Bot?", value="Yes" if target.bot else "No", inline=True)
+        embed.add_field(name="Account created", value=discord.utils.format_dt(target.created_at, style="R"), inline=True)
+        if target.joined_at:
+            embed.add_field(name="Joined server", value=discord.utils.format_dt(target.joined_at, style="R"), inline=True)
+        embed.add_field(name="Warnings", value=str(warning_count), inline=True)
+        embed.add_field(name="Tags created", value=str(tag_count), inline=True)
+        embed.add_field(name=f"Roles ({len(roles)})", value=", ".join(roles) if roles else "None", inline=False)
+
+        await ctx.respond(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 
 def setup(bot):

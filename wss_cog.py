@@ -15,6 +15,7 @@ class AutoReply(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self._cache = {}
+        self.cooldowns = commands.CooldownMapping.from_cooldown(1, 15.0, commands.BucketType.guild)
 
     wss_group = SlashCommandGroup("wss", "Automatic reply triggers (admin only)")
 
@@ -154,6 +155,10 @@ class AutoReply(commands.Cog):
 
         ctx = await self.bot.get_context(message)
         if ctx.valid:
+            return
+
+        bucket = self.cooldowns.get_bucket(message)
+        if bucket.update_rate_limit():
             return
 
         try:
