@@ -8,12 +8,26 @@ import aiosqlite
 from dotenv import load_dotenv
 
 from tag_cog import TagReportView
+from slash_cog import ADMIN_ROLE_IDS, ADMIN_OVERRIDE_USER_IDS
 
 load_dotenv()
 
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
+
+SLASH_DENIED_MESSAGE = (
+    "❌ Slash commands are restricted to admins. "
+    "Please use the `.` prefix commands instead (e.g. `.tag`, `.afk`, `.mcstatus`)."
+)
+
+
+def is_admin_member(user) -> bool:
+    if user.id in ADMIN_OVERRIDE_USER_IDS:
+        return True
+    if not isinstance(user, discord.Member):
+        return False
+    return bool({role.id for role in user.roles} & ADMIN_ROLE_IDS)
 
 
 class ReplyContext(commands.Context):
@@ -31,6 +45,12 @@ class ReplyContext(commands.Context):
 class TechifiedBot(commands.Bot):
     async def get_context(self, message, *, cls=ReplyContext):
         return await super().get_context(message, cls=cls)
+
+    async def invoke_application_command(self, ctx):
+        if not is_admin_member(ctx.author):
+            await ctx.respond(SLASH_DENIED_MESSAGE, ephemeral=True)
+            return
+        await super().invoke_application_command(ctx)
 
 
 bot = TechifiedBot(
@@ -138,9 +158,17 @@ async def setup_database(bot):
             host TEXT NOT NULL,
             port INTEGER NOT NULL DEFAULT 25565,
             creator INTEGER NOT NULL,
+            hide_ip INTEGER NOT NULL DEFAULT 0,
             UNIQUE(guild, name)
         )"""
     )
+    for migration in (
+        "ALTER TABLE mc_servers ADD COLUMN hide_ip INTEGER NOT NULL DEFAULT 0",
+    ):
+        try:
+            await bot.tag_db.execute(migration)
+        except aiosqlite.OperationalError:
+            pass
 
     await bot.tag_db.execute(
         """CREATE TABLE IF NOT EXISTS larp_scores (

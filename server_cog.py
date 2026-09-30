@@ -63,18 +63,24 @@ class ServerManagement(commands.Cog):
             return None
         return str(uuid.UUID(data["id"]))
 
+    @staticmethod
+    async def _reply(ctx, *args, **kwargs):
+        if isinstance(ctx, discord.ApplicationContext):
+            return await ctx.respond(*args, **kwargs)
+        return await ctx.send(*args, **kwargs)
+
     # ---------- multi-server config helpers ----------
 
     async def _get_server(self, guild_id: int, name: str):
         async with self.bot.tag_db.execute(
-            "SELECT host, port FROM mc_servers WHERE guild = ? AND name = ?",
+            "SELECT host, port, hide_ip FROM mc_servers WHERE guild = ? AND name = ?",
             (guild_id, name)
         ) as cursor:
             return await cursor.fetchone()
 
     async def _list_servers(self, guild_id: int):
         async with self.bot.tag_db.execute(
-            "SELECT name, host, port FROM mc_servers WHERE guild = ? ORDER BY name",
+            "SELECT name, host, port, hide_ip FROM mc_servers WHERE guild = ? ORDER BY name",
             (guild_id,)
         ) as cursor:
             return await cursor.fetchall()
@@ -85,7 +91,7 @@ class ServerManagement(commands.Cog):
             return []
         servers = await self._list_servers(guild_id)
         typed = (ctx.value or "").lower()
-        return [name for name, _, _ in servers if typed in name.lower()][:25]
+        return [server[0] for server in servers if typed in server[0].lower()][:25]
 
     # ---------- /server (config) ----------
 
@@ -96,6 +102,7 @@ class ServerManagement(commands.Cog):
         name: Option(str, "A short name for this server, e.g. 'survival'"),
         host: Option(str, "Server address, e.g. play.example.com"),
         port: Option(int, "Server port", required=False, default=DEFAULT_MC_PORT),
+        hide_ip: Option(bool, "Hide the address in /mcstatus and the server list", required=False, default=False),
     ):
         name = name.strip().lower()
         host = host.strip()
@@ -112,12 +119,13 @@ class ServerManagement(commands.Cog):
             return
 
         await self.bot.tag_db.execute(
-            "INSERT INTO mc_servers (guild, name, host, port, creator) VALUES (?, ?, ?, ?, ?)",
-            (ctx.guild.id, name, host, port, ctx.author.id)
+            "INSERT INTO mc_servers (guild, name, host, port, creator, hide_ip) VALUES (?, ?, ?, ?, ?, ?)",
+            (ctx.guild.id, name, host, port, ctx.author.id, int(hide_ip))
         )
         await self.bot.tag_db.commit()
 
-        await ctx.respond(f"✅ Now tracking `{name}` (`{host}:{port}`). Check it with `/mcstatus {name}`.")
+        shown = "address hidden" if hide_ip else f"`{host}:{port}`"
+        await ctx.respond(f"✅ Now tracking `{name}` ({shown}). Check it with `.mcstatus {name}`.")
 
     @server_group.command(name="remove", description="Stop tracking a Minecraft server (staff only)")
     @is_staff()
@@ -140,13 +148,14 @@ class ServerManagement(commands.Cog):
 
         await ctx.respond(f"✅ Stopped tracking `{name}`.")
 
-    @server_group.command(name="update", description="Update a tracked server's address and/or port (staff only)")
+    @server_group.command(name="update", description="Update a tracked server's address, port and/or visibility (staff only)")
     @is_staff()
     async def server_update(
         self, ctx,
         name: Option(str, "Server name to update", autocomplete=server_name_autocomplete),
         host: Option(str, "New server address", required=False, default=None),
         port: Option(int, "New server port", required=False, default=None),
+        hide_ip: Option(bool, "True to hide the address publicly, False to show it", required=False, default=None),
     ):
         name = name.strip().lower()
         existing = await self._get_server(ctx.guild.id, name)
@@ -154,72 +163,74 @@ class ServerManagement(commands.Cog):
             await ctx.respond(f"❌ No tracked server named `{name}`.", ephemeral=True)
             return
 
-        if host is None and port is None:
-            await ctx.respond("❌ Provide a new host and/or port to update.", ephemeral=True)
+        if host is None and port is None and hide_ip is None:
+            await ctx.respond("❌ Provide a new host, port and/or hide_ip setting to update.", ephemeral=True)
             return
 
-        old_host, old_port = existing
+        old_host, old_port, old_hide_ip = existing
         new_host = host.strip() if host else old_host
         new_port = port if port is not None else old_port
+        new_hide_ip = bool(old_hide_ip) if hide_ip is None else hide_ip
 
         await self.bot.tag_db.execute(
-            "UPDATE mc_servers SET host = ?, port = ? WHERE guild = ? AND name = ?",
-            (new_host, new_port, ctx.guild.id, name)
+            "UPDATE mc_servers SET host = ?, port = ?, hide_ip = ? WHERE guild = ? AND name = ?",
+            (new_host, new_port, int(new_hide_ip), ctx.guild.id, name)
         )
         await self.bot.tag_db.commit()
 
-        await ctx.respond(f"✅ Updated `{name}` to `{new_host}:{new_port}`.")
+        if new_hide_ip:
+            await ctx.respond(f"✅ Updated `{name}` (address hidden).")
+        else:
+            await ctx.respond(f"✅ Updated `{name}` to `{new_host}:{new_port}`.")
+
+    async def _send_server_list(self, ctx):
+        servers = await self._list_servers(ctx.guild.id)
+
+        if not servers:
+            await self._reply(ctx, "No servers are tracked here yet. An admin can add one with `/server add`.")
+            return
+
+        items = [
+            f"`{name}` — " + ("*address hidden*" if hide_ip else f"`{host}:{port}`")
+            for name, host, port, hide_ip in servers
+        ]
+        await send_paged(
+            ctx, f"🖥️ Minecraft servers in {ctx.guild.name}",
+            items, discord.Color.blurple(), noun="server(s)"
+        )
 
     @server_group.command(name="list", description="List every Minecraft server tracked in this Discord server")
     async def server_list(self, ctx):
-        servers = await self._list_servers(ctx.guild.id)
+        await self._send_server_list(ctx)
 
-        if not servers:
-            await ctx.respond("No servers are tracked here yet. Staff can add one with `/server add`.")
-            return
+    @commands.command(name="servers")
+    @commands.guild_only()
+    async def servers_prefix(self, ctx):
+        await self._send_server_list(ctx)
 
-        await send_paged(
-            ctx, f"🖥️ Minecraft servers in {ctx.guild.name}",
-            [f"`{name}` — `{host}:{port}`" for name, host, port in servers],
-            discord.Color.blurple(), noun="server(s)"
-        )
+    # ---------- mcstatus ----------
 
-    # ---------- /mcstatus ----------
-
-    @discord.slash_command(name="mcstatus", description="Check whether a tracked Minecraft server is online")
-    async def mcstatus(
-        self, ctx,
-        name: Option(
-            str, "Server name (see /server list); optional if only one server is tracked",
-            required=False, default=None, autocomplete=server_name_autocomplete
-        ),
-    ):
-        await ctx.defer()
-
+    async def _mcstatus_embed(self, guild_id: int, name):
         if JavaServer is None:
-            await ctx.respond("❌ The `mcstatus` package isn't installed on the bot host, so I can't check server status.")
-            return
+            return None, "❌ The `mcstatus` package isn't installed on the bot host, so I can't check server status."
 
-        servers = await self._list_servers(ctx.guild.id)
+        servers = await self._list_servers(guild_id)
         if not servers:
-            await ctx.respond("❌ No servers are tracked here yet. Staff can add one with `/server add`.")
-            return
+            return None, "❌ No servers are tracked here yet. An admin can add one with `/server add`."
 
         if name:
             name = name.strip().lower()
             match = next((s for s in servers if s[0] == name), None)
             if match is None:
                 names = ", ".join(f"`{s[0]}`" for s in servers)
-                await ctx.respond(f"❌ No tracked server named `{name}`. Available: {names}")
-                return
+                return None, f"❌ No tracked server named `{name}`. Available: {names}"
         elif len(servers) == 1:
             match = servers[0]
         else:
             names = ", ".join(f"`{s[0]}`" for s in servers)
-            await ctx.respond(f"❌ Multiple servers are tracked here — specify one: {names}")
-            return
+            return None, f"❌ Multiple servers are tracked here — specify one: {names}"
 
-        server_name, host, port = match
+        server_name, host, port, hide_ip = match
 
         try:
             mc_server = JavaServer.lookup(f"{host}:{port}")
@@ -230,16 +241,17 @@ class ServerManagement(commands.Cog):
                 description="This server appears to be offline or unreachable.",
                 color=discord.Color.red()
             )
-            embed.add_field(name="Address", value=f"`{host}:{port}`")
-            await ctx.respond(embed=embed)
-            return
+            if not hide_ip:
+                embed.add_field(name="Address", value=f"`{host}:{port}`")
+            return embed, None
 
         description = status.description
         motd = description.to_plain() if hasattr(description, "to_plain") else str(description)
         motd = motd.strip()[:256] if motd else None
 
         embed = discord.Embed(title=f"🟢 {server_name}", description=motd, color=discord.Color.green())
-        embed.add_field(name="Address", value=f"`{host}:{port}`", inline=True)
+        if not hide_ip:
+            embed.add_field(name="Address", value=f"`{host}:{port}`", inline=True)
         embed.add_field(name="Version", value=status.version.name, inline=True)
         embed.add_field(name="Players", value=f"{status.players.online}/{status.players.max}", inline=True)
 
@@ -251,7 +263,36 @@ class ServerManagement(commands.Cog):
         if latency is not None:
             embed.set_footer(text=f"Ping: {round(latency)} ms")
 
+        return embed, None
+
+    @discord.slash_command(name="mcstatus", description="Check whether a tracked Minecraft server is online")
+    async def mcstatus(
+        self, ctx,
+        name: Option(
+            str, "Server name (see /server list); optional if only one server is tracked",
+            required=False, default=None, autocomplete=server_name_autocomplete
+        ),
+    ):
+        await ctx.defer()
+
+        embed, error = await self._mcstatus_embed(ctx.guild.id, name)
+        if error:
+            await ctx.respond(error)
+            return
+
         await ctx.respond(embed=embed)
+
+    @commands.command(name="mcstatus")
+    @commands.guild_only()
+    async def mcstatus_prefix(self, ctx, name: str = None):
+        async with ctx.typing():
+            embed, error = await self._mcstatus_embed(ctx.guild.id, name)
+
+        if error:
+            await ctx.send(error)
+            return
+
+        await ctx.send(embed=embed)
 
     # ---------- whitelist ----------
 
