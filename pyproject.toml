@@ -15,6 +15,7 @@ dependencies = [
     "aiosqlite (==0.22.1)",
     "requests (>=2.34.2,<3.0.0)",
     "uuid (>=1.30,<2.0)",
+    "mcstatus (>=14.2.0,<15.0.0)",
 ]
 
 
