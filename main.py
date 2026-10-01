@@ -159,11 +159,13 @@ async def setup_database(bot):
             port INTEGER NOT NULL DEFAULT 25565,
             creator INTEGER NOT NULL,
             hide_ip INTEGER NOT NULL DEFAULT 0,
+            wls_api_key TEXT,
             UNIQUE(guild, name)
         )"""
     )
     for migration in (
         "ALTER TABLE mc_servers ADD COLUMN hide_ip INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE mc_servers ADD COLUMN wls_api_key TEXT",
     ):
         try:
             await bot.tag_db.execute(migration)

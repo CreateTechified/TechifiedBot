@@ -1,5 +1,4 @@
 import asyncio
-import os
 import uuid
 
 import requests
@@ -35,9 +34,8 @@ async def lookup_profile(name: str):
     return "error", None, None
 
 
-async def whitelist_add(player_uuid: str):
-    """Adds a player to the WhitelistSync whitelist. Returns (ok, status_code_or_None)."""
-    headers = {"X-API-KEY": os.getenv("WLS_TOKEN") or ""}
+async def whitelist_add(api_key: str, player_uuid: str):
+    headers = {"X-API-KEY": api_key or ""}
     try:
         resp = await asyncio.to_thread(
             requests.post, WHITELIST_URL, headers=headers, json={"uuid": player_uuid}, timeout=15
@@ -45,3 +43,25 @@ async def whitelist_add(player_uuid: str):
     except requests.RequestException:
         return False, None
     return resp.status_code < 400, resp.status_code
+
+
+async def whitelist_names(api_key: str):
+    headers = {"X-API-KEY": api_key or ""}
+    try:
+        resp = await asyncio.to_thread(requests.get, WHITELIST_URL, headers=headers, timeout=15)
+    except requests.RequestException:
+        return None
+
+    if resp.status_code != 200:
+        return None
+
+    try:
+        data = resp.json()
+    except ValueError:
+        return None
+
+    return {
+        player["name"].lower()
+        for player in data
+        if isinstance(player, dict) and player.get("name")
+    }

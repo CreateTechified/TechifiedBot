@@ -6,7 +6,7 @@ import discord
 from discord.ext import commands
 from discord.commands import SlashCommandGroup, Option
 
-from mc_utils import lookup_profile, whitelist_add
+from mc_utils import lookup_profile, whitelist_add, whitelist_names
 
 # --- CONFIGURATION ---
 APPLICATION_CHANNEL_ID = 1318925028586291283
@@ -22,6 +22,8 @@ DM_ANSWER_TIMEOUT = 300
 MAX_REASON_LENGTH = 1000
 
 REAPPLY_COOLDOWN = timedelta(hours=24)
+
+ADMIN_LOG_CHANNEL_ID = 1472650884906221771
 
 # For future pine (because i'm a dumbass): IT ONLY WORKS WITH DM APPLICATIONS.
 QUESTIONS = [
@@ -63,6 +65,15 @@ def is_staff_member(user) -> bool:
     if not isinstance(user, discord.Member):
         return False
     return bool({role.id for role in user.roles} & STAFF_ROLE_IDS)
+
+
+async def _get_server_api_key(db, guild_id, server_name):
+    async with db.execute(
+        "SELECT wls_api_key FROM mc_servers WHERE guild = ? AND name = ?",
+        (guild_id, server_name)
+    ) as cursor:
+        row = await cursor.fetchone()
+    return row[0] if row and row[0] else None
 
 
 def build_application_embed(app_id, user, server_name, mc_username, reason, is_test=False):
@@ -195,13 +206,26 @@ async def get_application_block(db, guild_id, user_id, server_name):
         return f"⚠️ You already have a pending application (#{pending}) for `{server_name}`."
 
     async with db.execute(
-        "SELECT 1 FROM applications WHERE guild = ? AND user_id = ? AND server_name = ? "
-        "AND status IN ('accepted', 'whitelisting', 'whitelisted') AND is_test = 0 LIMIT 1",
+        "SELECT status, final_username, mc_username FROM applications "
+        "WHERE guild = ? AND user_id = ? AND server_name = ? "
+        "AND status IN ('accepted', 'whitelisting', 'whitelisted') AND is_test = 0",
         (guild_id, user_id, server_name)
     ) as cursor:
-        if await cursor.fetchone() is not None:
-            return (f"✅ Your application for `{server_name}` was already accepted. "
-                    "If you want to get an alt whitelisted, contact staff.")
+        accepted_rows = await cursor.fetchall()
+
+    if accepted_rows:
+        already_accepted = (f"✅ Your application for `{server_name}` was already accepted. "
+                            "If you want to get an alt whitelisted, contact staff.")
+
+        if any(status != "whitelisted" for status, _, _ in accepted_rows):
+            return already_accepted
+
+        api_key = await _get_server_api_key(db, guild_id, server_name)
+        on_whitelist = await whitelist_names(api_key) if api_key else None
+        if on_whitelist is None:
+            return "❌ I couldn't check the whitelist right now. Please try again in a minute."
+        if any((final or applied).lower() in on_whitelist for _, final, applied in accepted_rows):
+            return already_accepted
 
     async with db.execute(
         "SELECT reviewed_at FROM applications WHERE guild = ? AND user_id = ? AND server_name = ? "
@@ -393,7 +417,7 @@ async def send_accept_dm(client, user_id, app_id, server_name, mc_username) -> b
 
 
 async def complete_whitelist(client, app_id: int, username: str):
-    """Verifies the account, whitelists it, and records it.
+    """Verifies the account, whitelists it on the server it was applied to, and records it.
 
     Returns (status, text):
       ("ok", canonical_username)  - whitelisted
@@ -417,12 +441,24 @@ async def complete_whitelist(client, app_id: int, username: str):
     if not claimed:
         return "done", "⚠️ This application has already been completed."
 
-    async with db.execute("SELECT is_test FROM applications WHERE id = ?", (app_id,)) as cursor:
-        test_row = await cursor.fetchone()
-    if test_row and test_row[0]:
+    async with db.execute(
+        "SELECT is_test, guild, server_name FROM applications WHERE id = ?", (app_id,)
+    ) as cursor:
+        app_row = await cursor.fetchone()
+    is_test, guild_id, server_name = app_row if app_row else (0, None, None)
+
+    if is_test:
         ok, code = True, None
     else:
-        ok, code = await whitelist_add(player_uuid)
+        api_key = await _get_server_api_key(db, guild_id, server_name)
+        if not api_key:
+            await db.execute("UPDATE applications SET status = 'accepted' WHERE id = ?", (app_id,))
+            await db.commit()
+            return "retry", (
+                f"❌ `{server_name}` doesn't have a WhitelistSync API key configured. "
+                "Tell a staff member to set one with `/server update`, then try again."
+            )
+        ok, code = await whitelist_add(api_key, player_uuid)
     if not ok:
         await db.execute("UPDATE applications SET status = 'accepted' WHERE id = ?", (app_id,))
         await db.commit()
@@ -880,6 +916,27 @@ class ReviewView(discord.ui.View):
         await interaction.response.send_modal(DenyReasonModal(self))
 
 
+async def log_applications_toggle(client, ctx, enabled: bool):
+    log_channel = client.get_channel(ADMIN_LOG_CHANNEL_ID)
+    if log_channel is None:
+        return
+
+    embed = discord.Embed(
+        title="🔓 Whitelist Applications Opened" if enabled else "🔒 Whitelist Applications Closed",
+        color=discord.Color.green() if enabled else discord.Color.red(),
+        timestamp=discord.utils.utcnow()
+    )
+    embed.add_field(name="Moderator", value=f"{ctx.author.mention} (`{ctx.author.id}`)", inline=False)
+    channel_name = getattr(ctx.channel, "name", None)
+    if channel_name:
+        embed.set_footer(text=f"in #{channel_name}")
+
+    try:
+        await log_channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+    except discord.HTTPException:
+        pass
+
+
 # ---------- the cog ----------
 
 class Applications(commands.Cog):
@@ -988,6 +1045,7 @@ class Applications(commands.Cog):
             (ctx.guild.id, int(not enabled))
         )
         await self.bot.tag_db.commit()
+        await log_applications_toggle(self.bot, ctx, enabled)
 
         if enabled:
             await ctx.respond("✅ Whitelist applications are now **open**.", ephemeral=True)
