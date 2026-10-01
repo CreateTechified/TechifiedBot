@@ -1,8 +1,11 @@
+import asyncio
 import re
 
 import discord
 from discord.ext import commands
 from discord.commands import SlashCommandGroup, Option
+
+from mc_utils import lookup_profile, whitelist_add
 
 # --- CONFIGURATION ---
 APPLICATION_CHANNEL_ID = 1318925028586291283
@@ -14,11 +17,35 @@ STAFF_ROLE_IDS = {ADMIN_ROLE_ID, MODERATOR_ROLE_ID, OWNER_ROLE_ID}
 
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{3,16}$")
 
+DM_ANSWER_TIMEOUT = 300
+MAX_REASON_LENGTH = 1000
+
+# PLACEHOLDER QUESTIONS
+USERNAME_PROMPT = "**Question 1/2:** What's your Minecraft username?"
+REASON_PROMPT = "**Question 2/2:** Why do you want to join?"
+
 STATUS_STYLE = {
     "pending": (discord.Color.gold(), "📝 Whitelist Application"),
-    "accepted": (discord.Color.green(), "✅ Accepted"),
-    "denied": (discord.Color.red(), "❌ Rejected"),
+    "accepted": (discord.Color.green(), "✅ Application Accepted"),
+    "denied": (discord.Color.red(), "❌ Application Rejected"),
 }
+
+# Application statuses:
+#   pending      - waiting for staff
+#   denied       - staff said no
+#   accepted     - staff said yes, waiting for the applicant to confirm their mc username
+#   whitelisting - (briefly) being added to the whitelist
+#   whitelisted  - done
+
+# A BOT RESTART WILL END ANY IN-PROGRESS DM SESSIONS!!
+ACTIVE_DM_SESSIONS = set()
+_background_tasks = set()
+
+
+def spawn(coro):
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
 
 def is_staff_member(user) -> bool:
@@ -38,12 +65,190 @@ def build_application_embed(app_id, user, server_name, mc_username, reason):
     return embed
 
 
+def build_summary_embed(app_id, server_name, mc_username, reason):
+    embed = discord.Embed(
+        title="📝 Your application", color=discord.Color.green(), timestamp=discord.utils.utcnow()
+    )
+    embed.add_field(name="Server", value=f"`{server_name}`", inline=True)
+    embed.add_field(name="Minecraft username", value=f"`{mc_username}`", inline=True)
+    embed.add_field(name="Why do you want to join?", value=reason[:1024], inline=False)
+    embed.set_footer(text=f"Application #{app_id}")
+    return embed
+
+
+async def notify_staff(client, application_message_id, text):
+    channel = client.get_channel(APPLICATION_CHANNEL_ID)
+    if channel is None:
+        return
+    try:
+        await channel.get_partial_message(application_message_id).reply(
+            text, mention_author=False, allowed_mentions=discord.AllowedMentions.none()
+        )
+    except discord.HTTPException:
+        pass
+
+
+# ---------- DM question engine ----------
+
+class DMCancelled(Exception):
+    pass
+
+
+class DMTimedOut(Exception):
+    pass
+
+
+async def dm_ask(bot, channel, user_id, prompt, validate):
+    await channel.send(prompt)
+
+    def check(m):
+        return m.author.id == user_id and m.channel.id == channel.id
+
+    while True:
+        try:
+            msg = await bot.wait_for("message", check=check, timeout=DM_ANSWER_TIMEOUT)
+        except asyncio.TimeoutError:
+            raise DMTimedOut()
+
+        text = (msg.content or "").strip()
+        if text.lower() == "cancel":
+            raise DMCancelled()
+
+        error, value = await validate(text)
+        if error:
+            await channel.send(error)
+            continue
+        return value
+
+
+async def validate_username_answer(text):
+    if not USERNAME_RE.match(text):
+        return ("❌ That isn't a valid Minecraft username (3-16 letters, numbers or underscores). "
+                "Try again, or type `cancel`."), None
+
+    state, canonical, _ = await lookup_profile(text)
+    if state == "not_found":
+        return (f"❌ There's no Minecraft account named `{text}`. "
+                "Check the spelling and try again, or type `cancel`."), None
+    if state == "ok":
+        return None, (canonical, True)
+    return None, (text, False)  # Mojang unreachable: accept, but mark as unverified.. just in case
+
+
+async def validate_reason_answer(text):
+    if not text:
+        return "❌ Please send your answer as text. Try again, or type `cancel`.", None
+    if len(text) > MAX_REASON_LENGTH:
+        return (f"❌ That's {len(text)} characters, but the limit is {MAX_REASON_LENGTH}. "
+                "Please shorten it and send it again."), None
+    return None, text
+
+
+# ---------- submitting an application (shared by the popup and DM flows) ----------
+
+async def get_pending_application(db, guild_id, user_id, server_name):
+    async with db.execute(
+        "SELECT id FROM applications WHERE guild = ? AND user_id = ? AND server_name = ? "
+        "AND status = 'pending'",
+        (guild_id, user_id, server_name)
+    ) as cursor:
+        row = await cursor.fetchone()
+    return row[0] if row else None
+
+
+async def submit_application(bot, user, guild_id, server_name, username, reason, verified):
+    db = bot.tag_db
+
+    async with db.execute(
+        "SELECT 1 FROM mc_servers WHERE guild = ? AND name = ?", (guild_id, server_name)
+    ) as cursor:
+        if await cursor.fetchone() is None:
+            return f"❌ `{server_name}` isn't a tracked server anymore.", None
+
+    existing = await get_pending_application(db, guild_id, user.id, server_name)
+    if existing is not None:
+        return f"⚠️ You already have a pending application (#{existing}) for `{server_name}`.", None
+
+    channel = bot.get_channel(APPLICATION_CHANNEL_ID)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(APPLICATION_CHANNEL_ID)
+        except discord.HTTPException:
+            channel = None
+    if channel is None:
+        return "❌ I can't reach the applications channel right now. Please tell a staff member.", None
+
+    cursor = await db.execute(
+        "INSERT INTO applications (guild, user_id, server_name, mc_username, reason, status, created_at) "
+        "VALUES (?, ?, ?, ?, ?, 'pending', ?)",
+        (guild_id, user.id, server_name, username, reason, discord.utils.utcnow().isoformat())
+    )
+    await db.commit()
+    app_id = cursor.lastrowid
+    await cursor.close()
+
+    embed = build_application_embed(app_id, user, server_name, username, reason)
+    if not verified:
+        embed.add_field(
+            name="⚠️ Username not verified",
+            value="Mojang couldn't be reached, so this name hasn't been checked yet.",
+            inline=False
+        )
+    try:
+        msg = await channel.send(
+            embed=embed, view=ReviewView(), allowed_mentions=discord.AllowedMentions.none()
+        )
+    except discord.HTTPException:
+        await db.execute("DELETE FROM applications WHERE id = ?", (app_id,))
+        await db.commit()
+        return "❌ I couldn't post your application. Please tell a staff member.", None
+
+    await db.execute("UPDATE applications SET message_id = ? WHERE id = ?", (msg.id, app_id))
+    await db.commit()
+    return None, app_id
+
+
+async def run_dm_application(bot, user, channel, guild_id, server_name):
+    try:
+        try:
+            username, verified = await dm_ask(
+                bot, channel, user.id, USERNAME_PROMPT, validate_username_answer
+            )
+            reason = await dm_ask(bot, channel, user.id, REASON_PROMPT, validate_reason_answer)
+        except DMCancelled:
+            await channel.send("🛑 Application cancelled. You can start again any time with `.apply`.")
+            return
+        except DMTimedOut:
+            await channel.send("⌛ I stopped waiting for an answer, so the application was cancelled. "
+                               "You can start again any time with `.apply`.")
+            return
+
+        error, app_id = await submit_application(
+            bot, user, guild_id, server_name, username, reason, verified
+        )
+        if error:
+            await channel.send(error)
+            return
+
+        await channel.send(
+            f"✅ Your application for `{server_name}` was submitted! Staff will review it soon. "
+            f"Here's a copy of your answers:",
+            embed=build_summary_embed(app_id, server_name, username, reason)
+        )
+    except discord.HTTPException:
+        pass
+    finally:
+        ACTIVE_DM_SESSIONS.discard(user.id)
+
+
+# ---------- staff review ----------
+
 async def finalize_application(interaction: discord.Interaction, view, new_status: str, reason: str = None):
     db = interaction.client.tag_db
     message = interaction.message
 
     async with db.execute(
-        "SELECT id, user_id, server_name, status FROM applications WHERE message_id = ?",
+        "SELECT id, user_id, server_name, mc_username, status FROM applications WHERE message_id = ?",
         (message.id,)
     ) as cursor:
         row = await cursor.fetchone()
@@ -52,7 +257,7 @@ async def finalize_application(interaction: discord.Interaction, view, new_statu
         await interaction.response.send_message("❌ I have no record of this application.", ephemeral=True)
         return
 
-    app_id, user_id, server_name, status = row
+    app_id, user_id, server_name, mc_username, status = row
 
     cursor = await db.execute(
         "UPDATE applications SET status = ?, reviewer_id = ?, reviewed_at = ? "
@@ -84,18 +289,267 @@ async def finalize_application(interaction: discord.Interaction, view, new_statu
         item.disabled = True
     await interaction.response.edit_message(embed=embed, view=view)
 
-    try:
-        applicant = await interaction.client.fetch_user(user_id)
-        if new_status == "accepted":
-            text = f"✅ Your whitelist application for **{server_name}** was accepted!"
-        else:
-            text = f"❌ Your whitelist application for **{server_name}** was denied."
+    if new_status == "accepted":
+        sent = await send_accept_dm(interaction.client, user_id, app_id, server_name, mc_username)
+        if not sent:
+            await notify_staff(
+                interaction.client, message.id,
+                "⚠️ I couldn't DM the applicant (their DMs are probably closed), so they haven't been "
+                "asked to confirm their username. Whitelist them manually with `/whitelist add`."
+            )
+    else:
+        try:
+            applicant = await interaction.client.fetch_user(user_id)
+            text = f"❌ Your whitelist application for **{server_name}** was rejected."
             if reason:
                 text += f"\n**Reason:** {reason}"
-        await applicant.send(text)
+            await applicant.send(text)
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+
+# ---------- username confirmation (after acceptance) ----------
+
+async def send_accept_dm(client, user_id, app_id, server_name, mc_username) -> bool:
+    try:
+        user = await client.fetch_user(user_id)
+        msg = await user.send(
+            f"🎉 Your whitelist application for **{server_name}** was accepted!\n\n"
+            f"Before I whitelist you: is `{mc_username}` your actual Minecraft username?",
+            view=UsernameConfirmView()
+        )
     except (discord.Forbidden, discord.HTTPException):
+        return False
+
+    db = client.tag_db
+    await db.execute("UPDATE applications SET confirm_message_id = ? WHERE id = ?", (msg.id, app_id))
+    await db.commit()
+    return True
+
+
+async def complete_whitelist(client, app_id: int, username: str):
+    """Verifies the account, whitelists it, and records it.
+
+    Returns (status, text):
+      ("ok", canonical_username)  - whitelisted
+      ("retry", error_text)       - failed, the user can try again
+      ("done", text)              - this application was already completed
+    """
+    db = client.tag_db
+
+    state, canonical, player_uuid = await lookup_profile(username)
+    if state == "not_found":
+        return "retry", f"❌ There's no Minecraft account named `{username}`."
+    if state == "error":
+        return "retry", "❌ I couldn't reach Mojang to check that name. Please try again in a minute."
+
+    cursor = await db.execute(
+        "UPDATE applications SET status = 'whitelisting' WHERE id = ? AND status = 'accepted'", (app_id,)
+    )
+    await db.commit()
+    claimed = cursor.rowcount
+    await cursor.close()
+    if not claimed:
+        return "done", "⚠️ This application has already been completed."
+
+    ok, code = await whitelist_add(player_uuid)
+    if not ok:
+        await db.execute("UPDATE applications SET status = 'accepted' WHERE id = ?", (app_id,))
+        await db.commit()
+        detail = f" (error {code})" if code else ""
+        return "retry", f"❌ The whitelist service didn't accept that{detail}. Try again, or tell a staff member."
+
+    await db.execute(
+        "UPDATE applications SET status = 'whitelisted', final_username = ?, whitelisted_at = ? WHERE id = ?",
+        (canonical, discord.utils.utcnow().isoformat(), app_id)
+    )
+    await db.commit()
+    return "ok", canonical
+
+
+async def _get_by_confirm_message(db, message_id):
+    async with db.execute(
+        "SELECT id, server_name, mc_username, message_id, status FROM applications "
+        "WHERE confirm_message_id = ?",
+        (message_id,)
+    ) as cursor:
+        return await cursor.fetchone()
+
+
+async def edit_confirm_message(user, message_id, content):
+    try:
+        dm = user.dm_channel or await user.create_dm()
+        await dm.get_partial_message(message_id).edit(content=content, view=None)
+    except discord.HTTPException:
         pass
 
+
+class CorrectUsernameModal(discord.ui.Modal):
+    def __init__(self, app_id, applied_name, confirm_message_id, application_message_id):
+        super().__init__(title="Your Minecraft username")
+        self.app_id = app_id
+        self.applied_name = applied_name
+        self.confirm_message_id = confirm_message_id
+        self.application_message_id = application_message_id
+        self.username_input = discord.ui.InputText(
+            label="Your actual Minecraft username",
+            style=discord.InputTextStyle.short,
+            min_length=3, max_length=16, required=True,
+        )
+        self.add_item(self.username_input)
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        username = (self.username_input.value or "").strip()
+
+        if not USERNAME_RE.match(username):
+            await interaction.followup.send(
+                "❌ That isn't a valid Minecraft username (3-16 letters, numbers or underscores). "
+                "Press the button to try again.", ephemeral=True
+            )
+            return
+
+        status, result = await complete_whitelist(interaction.client, self.app_id, username)
+        if status != "ok":
+            suffix = "\nPress the button to try again." if status == "retry" else ""
+            await interaction.followup.send(f"{result}{suffix}", ephemeral=True)
+            return
+
+        done_text = f"✅ You're whitelisted as `{result}`! See you in game."
+        await interaction.edit_original_response(content=done_text, view=None)
+        await edit_confirm_message(interaction.user, self.confirm_message_id, done_text)
+        await notify_staff(
+            interaction.client, self.application_message_id,
+            f"✅ Whitelisted `{result}` (applied as `{self.applied_name}`, corrected by the applicant)."
+        )
+
+
+async def run_dm_correction(bot, user, channel, app_id, applied_name, confirm_message_id, application_message_id):
+    """Asks for the correct username in DMs, whitelists it, and finishes up :thumbsup:"""
+
+    async def validate(text):
+        if not USERNAME_RE.match(text):
+            return ("❌ That isn't a valid Minecraft username (3-16 letters, numbers or underscores). "
+                    "Try again, or type `cancel`."), None
+        status, result = await complete_whitelist(bot, app_id, text)
+        if status == "retry":
+            return f"{result}\nTry again, or type `cancel`.", None
+        return None, (status, result)
+
+    try:
+        try:
+            status, result = await dm_ask(
+                bot, channel, user.id,
+                "What's your actual Minecraft username? (Type `cancel` to stop.)", validate
+            )
+        except DMCancelled:
+            await channel.send("🛑 Cancelled. Press **No, change it** on the message above whenever you're ready.")
+            return
+        except DMTimedOut:
+            await channel.send("⌛ I stopped waiting for an answer. Press **No, change it** on the message "
+                               "above whenever you're ready.")
+            return
+
+        if status == "done":
+            await channel.send(result)
+            return
+
+        done_text = f"✅ You're whitelisted as `{result}`! See you in game."
+        await edit_confirm_message(user, confirm_message_id, done_text)
+        await channel.send(done_text)
+        await notify_staff(
+            bot, application_message_id,
+            f"✅ Whitelisted `{result}` (applied as `{applied_name}`, corrected by the applicant)."
+        )
+    except discord.HTTPException:
+        pass
+    finally:
+        ACTIVE_DM_SESSIONS.discard(user.id)
+
+
+class CorrectMethodView(discord.ui.View):
+
+    def __init__(self, app_id, applied_name, confirm_message_id, application_message_id):
+        super().__init__(timeout=300)
+        self.app_id = app_id
+        self.applied_name = applied_name
+        self.confirm_message_id = confirm_message_id
+        self.application_message_id = application_message_id
+
+    @discord.ui.button(label="Fill out a popup", style=discord.ButtonStyle.primary, emoji="📋")
+    async def popup(self, button: discord.ui.Button, interaction: discord.Interaction):
+        await interaction.response.send_modal(CorrectUsernameModal(
+            self.app_id, self.applied_name, self.confirm_message_id, self.application_message_id
+        ))
+
+    @discord.ui.button(label="Type it in chat", style=discord.ButtonStyle.secondary, emoji="💬")
+    async def chat(self, button: discord.ui.Button, interaction: discord.Interaction):
+        user = interaction.user
+        if user.id in ACTIVE_DM_SESSIONS:
+            await interaction.response.send_message(
+                "⚠️ You already have a question in progress. Answer it (or type `cancel`) first.",
+                ephemeral=True
+            )
+            return
+        ACTIVE_DM_SESSIONS.add(user.id)
+
+        channel = user.dm_channel or await user.create_dm()
+        await interaction.response.edit_message(
+            content="💬 Okay! I'll ask for it in a new message below.", view=None
+        )
+        spawn(run_dm_correction(
+            interaction.client, user, channel, self.app_id, self.applied_name,
+            self.confirm_message_id, self.application_message_id
+        ))
+
+
+class UsernameConfirmView(discord.ui.View):
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Yes, that's me", style=discord.ButtonStyle.success, custom_id="application_username_yes"
+    )
+    async def yes(self, button: discord.ui.Button, interaction: discord.Interaction):
+        db = interaction.client.tag_db
+        row = await _get_by_confirm_message(db, interaction.message.id)
+        if row is None:
+            await interaction.response.send_message("❌ I have no record of this application.", ephemeral=True)
+            return
+
+        app_id, server_name, mc_username, application_message_id, status = row
+        await interaction.response.defer()
+
+        result_status, result = await complete_whitelist(interaction.client, app_id, mc_username)
+        if result_status != "ok":
+            await interaction.followup.send(result, ephemeral=True)
+            return
+
+        await interaction.edit_original_response(
+            content=f"✅ You're whitelisted as `{result}`! See you in game.", view=None
+        )
+        await notify_staff(interaction.client, application_message_id, f"✅ Whitelisted `{result}`.")
+
+    @discord.ui.button(
+        label="No, change it", style=discord.ButtonStyle.secondary, custom_id="application_username_no"
+    )
+    async def no(self, button: discord.ui.Button, interaction: discord.Interaction):
+        db = interaction.client.tag_db
+        row = await _get_by_confirm_message(db, interaction.message.id)
+        if row is None:
+            await interaction.response.send_message("❌ I have no record of this application.", ephemeral=True)
+            return
+
+        app_id, _, mc_username, application_message_id, status = row
+        if status != "accepted":
+            await interaction.response.send_message("⚠️ This application has already been completed.", ephemeral=True)
+            return
+
+        await interaction.response.send_message(
+            "How would you like to enter your username?",
+            view=CorrectMethodView(app_id, mc_username, interaction.message.id, application_message_id)
+        )
 
 # ---------- application form (popup) ----------
 
@@ -105,7 +559,6 @@ class ApplicationModal(discord.ui.Modal):
         self.cog = cog
         self.server_name = server_name
 
-        # PLACEHOLDER QUESTIONS - i couldn't think of anything else :DD
         self.username_input = discord.ui.InputText(
             label="Minecraft username",
             placeholder="Your in-game name",
@@ -115,7 +568,7 @@ class ApplicationModal(discord.ui.Modal):
         self.reason_input = discord.ui.InputText(
             label="Why do you want to join?",
             style=discord.InputTextStyle.paragraph,
-            max_length=1000, required=True,
+            max_length=MAX_REASON_LENGTH, required=True,
         )
         self.add_item(self.username_input)
         self.add_item(self.reason_input)
@@ -133,75 +586,108 @@ class ApplicationModal(discord.ui.Modal):
             )
             return
 
-        db = self.cog.bot.tag_db
-        guild_id = interaction.guild_id
-
-        async with db.execute(
-            "SELECT 1 FROM mc_servers WHERE guild = ? AND name = ?", (guild_id, self.server_name)
-        ) as cursor:
-            if await cursor.fetchone() is None:
-                await interaction.followup.send(
-                    f"❌ `{self.server_name}` isn't a tracked server anymore.", ephemeral=True
-                )
-                return
-
-        async with db.execute(
-            "SELECT id FROM applications WHERE guild = ? AND user_id = ? AND server_name = ? "
-            "AND status = 'pending'",
-            (guild_id, interaction.user.id, self.server_name)
-        ) as cursor:
-            existing = await cursor.fetchone()
-        if existing is not None:
+        state, canonical, _ = await lookup_profile(username)
+        if state == "not_found":
             await interaction.followup.send(
-                f"⚠️ You already have a pending application (#{existing[0]}) for `{self.server_name}`.",
+                f"❌ There's no Minecraft account named `{username}`. Check the spelling and apply again.",
                 ephemeral=True
             )
             return
+        verified = state == "ok"
+        if verified:
+            username = canonical
 
-        channel = self.cog.bot.get_channel(APPLICATION_CHANNEL_ID)
-        if channel is None:
-            try:
-                channel = await self.cog.bot.fetch_channel(APPLICATION_CHANNEL_ID)
-            except discord.HTTPException:
-                channel = None
-        if channel is None:
-            await interaction.followup.send(
-                "❌ I can't reach the applications channel right now. Please tell a staff member.",
-                ephemeral=True
-            )
-            return
-
-        cursor = await db.execute(
-            "INSERT INTO applications (guild, user_id, server_name, mc_username, reason, status, created_at) "
-            "VALUES (?, ?, ?, ?, ?, 'pending', ?)",
-            (guild_id, interaction.user.id, self.server_name, username, reason,
-             discord.utils.utcnow().isoformat())
+        error, app_id = await submit_application(
+            self.cog.bot, interaction.user, interaction.guild_id, self.server_name,
+            username, reason, verified
         )
-        await db.commit()
-        app_id = cursor.lastrowid
-        await cursor.close()
-
-        embed = build_application_embed(app_id, interaction.user, self.server_name, username, reason)
-        try:
-            msg = await channel.send(
-                embed=embed, view=ReviewView(),
-                allowed_mentions=discord.AllowedMentions.none()
-            )
-        except discord.HTTPException:
-            await db.execute("DELETE FROM applications WHERE id = ?", (app_id,))
-            await db.commit()
-            await interaction.followup.send(
-                "❌ I couldn't post your application. Please tell a staff member.", ephemeral=True
-            )
+        if error:
+            await interaction.followup.send(error, ephemeral=True)
             return
-
-        await db.execute("UPDATE applications SET message_id = ? WHERE id = ?", (msg.id, app_id))
-        await db.commit()
 
         await interaction.followup.send(
-            f"✅ Application #{app_id} for `{self.server_name}` submitted! Staff will review it soon.",
+            f"✅ Your application for `{self.server_name}` was submitted! Staff will review it soon. "
+            f"Here's a copy of your answers:",
+            embed=build_summary_embed(app_id, self.server_name, username, reason),
             ephemeral=True
         )
+
+
+# ---------- choosing how to apply ----------
+
+class MethodChoiceView(discord.ui.View):
+    """Popup or DM questions. Just so no one thinks it's a scam :)"""
+
+    def __init__(self, cog, server_name: str, owner_id=None):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.server_name = server_name
+        self.owner_id = owner_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if self.owner_id is not None and interaction.user.id != self.owner_id:
+            await interaction.response.send_message(
+                "❌ This isn't for you. Run `.apply` yourself.", ephemeral=True
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="Fill out a popup", style=discord.ButtonStyle.primary, emoji="📋")
+    async def popup(self, button: discord.ui.Button, interaction: discord.Interaction):
+        await interaction.response.send_modal(ApplicationModal(self.cog, self.server_name))
+
+    @discord.ui.button(label="Answer in DMs", style=discord.ButtonStyle.secondary, emoji="💬")
+    async def dms(self, button: discord.ui.Button, interaction: discord.Interaction):
+        user = interaction.user
+        if user.id in ACTIVE_DM_SESSIONS:
+            await interaction.response.send_message(
+                "⚠️ You already have a question in progress in your DMs. Answer it (or type `cancel`) first.",
+                ephemeral=True
+            )
+            return
+        ACTIVE_DM_SESSIONS.add(user.id)
+
+        await interaction.response.defer()
+
+        existing = await get_pending_application(
+            self.cog.bot.tag_db, interaction.guild_id, user.id, self.server_name
+        )
+        if existing is not None:
+            ACTIVE_DM_SESSIONS.discard(user.id)
+            await interaction.followup.send(
+                f"⚠️ You already have a pending application (#{existing}) for `{self.server_name}`.",
+                ephemeral=True
+            )
+            return
+
+        try:
+            channel = await user.create_dm()
+            await channel.send(
+                f"📬 **Whitelist application for `{self.server_name}`**\n"
+                f"I'll ask you 2 questions, one at a time. Just reply to each in this chat.\n" # 2 for now.. too lazy to make it change automatically.
+                f"Type `cancel` at any time to stop. If you don't answer for "
+                f"{DM_ANSWER_TIMEOUT // 60} minutes, I'll cancel automatically."
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            ACTIVE_DM_SESSIONS.discard(user.id)
+            await interaction.followup.send(
+                "❌ I couldn't DM you. Turn on DMs from server members and try again, "
+                "or use the popup instead.", ephemeral=True
+            )
+            return
+
+        await interaction.edit_original_response(
+            content="📬 Check your DMs! I've sent you the first question.", view=None
+        )
+        spawn(run_dm_application(self.cog.bot, user, channel, interaction.guild_id, self.server_name))
+
+
+async def send_method_choice(interaction: discord.Interaction, cog, server_name: str):
+    await interaction.response.send_message(
+        f"How would you like to apply for `{server_name}`?",
+        view=MethodChoiceView(cog, server_name, owner_id=interaction.user.id),
+        ephemeral=True
+    )
 
 
 # ---------- choosing a server ----------
@@ -230,29 +716,7 @@ class ServerSelectView(discord.ui.View):
         return True
 
     async def _picked(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(ApplicationModal(self.cog, self.select.values[0]))
-
-
-class StartApplicationView(discord.ui.View):
-
-    def __init__(self, cog, server_name: str, owner_id: int):
-        super().__init__(timeout=120)
-        self.cog = cog
-        self.server_name = server_name
-        self.owner_id = owner_id
-        self.apply_button.label = f"Apply for {server_name}"[:80]
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.owner_id:
-            await interaction.response.send_message(
-                "❌ This button isn't for you. Run `.apply` yourself.", ephemeral=True
-            )
-            return False
-        return True
-
-    @discord.ui.button(label="Apply", style=discord.ButtonStyle.success, emoji="📝")
-    async def apply_button(self, button: discord.ui.Button, interaction: discord.Interaction):
-        await interaction.response.send_modal(ApplicationModal(self.cog, self.server_name))
+        await send_method_choice(interaction, self.cog, self.select.values[0])
 
 
 # ---------- persistent views ----------
@@ -276,7 +740,7 @@ class ApplyPanelView(discord.ui.View):
             return
 
         if len(names) == 1:
-            await interaction.response.send_modal(ApplicationModal(self.cog, names[0]))
+            await send_method_choice(interaction, self.cog, names[0])
             return
 
         await interaction.response.send_message(
@@ -330,6 +794,7 @@ class Applications(commands.Cog):
         self.bot = bot
         bot.add_view(ApplyPanelView(self))
         bot.add_view(ReviewView())
+        bot.add_view(UsernameConfirmView())
 
     application_group = SlashCommandGroup("application", "Whitelist application system (admin only)")
 
@@ -359,8 +824,8 @@ class Applications(commands.Cog):
 
         if server:
             await ctx.send(
-                f"Click the button below to apply for `{server}`.",
-                view=StartApplicationView(self, server, ctx.author.id)
+                f"How would you like to apply for `{server}`?",
+                view=MethodChoiceView(self, server, ctx.author.id)
             )
         else:
             await ctx.send(

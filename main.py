@@ -182,9 +182,21 @@ async def setup_database(bot):
             message_id INTEGER,
             created_at TEXT NOT NULL,
             reviewer_id INTEGER,
-            reviewed_at TEXT
+            reviewed_at TEXT,
+            confirm_message_id INTEGER,
+            final_username TEXT,
+            whitelisted_at TEXT
         )"""
     )
+    for migration in (
+        "ALTER TABLE applications ADD COLUMN confirm_message_id INTEGER",
+        "ALTER TABLE applications ADD COLUMN final_username TEXT",
+        "ALTER TABLE applications ADD COLUMN whitelisted_at TEXT",
+    ):
+        try:
+            await bot.tag_db.execute(migration)
+        except aiosqlite.OperationalError:
+            pass
 
     await bot.tag_db.execute(
         """CREATE TABLE IF NOT EXISTS larp_scores (
