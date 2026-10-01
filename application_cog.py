@@ -1,5 +1,6 @@
 import asyncio
 import re
+from datetime import timedelta
 
 import discord
 from discord.ext import commands
@@ -20,9 +21,19 @@ USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{3,16}$")
 DM_ANSWER_TIMEOUT = 300
 MAX_REASON_LENGTH = 1000
 
-# PLACEHOLDER QUESTIONS
-USERNAME_PROMPT = "**Question 1/2:** What's your Minecraft username?"
-REASON_PROMPT = "**Question 2/2:** Why do you want to join?"
+REAPPLY_COOLDOWN = timedelta(hours=24)
+
+# For future pine (because i'm a dumbass): IT ONLY WORKS WITH DM APPLICATIONS.
+QUESTIONS = [
+    "What's your Minecraft username?",
+    "Why do you want to join?",
+]
+TOTAL_QUESTIONS = len(QUESTIONS)
+
+
+def question_prompt(n: int) -> str:
+    return f"**Question {n}/{TOTAL_QUESTIONS}:** {QUESTIONS[n - 1]}"
+
 
 STATUS_STYLE = {
     "pending": (discord.Color.gold(), "📝 Whitelist Application"),
@@ -156,6 +167,37 @@ async def get_pending_application(db, guild_id, user_id, server_name):
     return row[0] if row else None
 
 
+async def get_application_block(db, guild_id, user_id, server_name):
+    pending = await get_pending_application(db, guild_id, user_id, server_name)
+    if pending is not None:
+        return f"⚠️ You already have a pending application (#{pending}) for `{server_name}`."
+
+    async with db.execute(
+        "SELECT 1 FROM applications WHERE guild = ? AND user_id = ? AND server_name = ? "
+        "AND status IN ('accepted', 'whitelisting', 'whitelisted') LIMIT 1",
+        (guild_id, user_id, server_name)
+    ) as cursor:
+        if await cursor.fetchone() is not None:
+            return (f"✅ Your application for `{server_name}` was already accepted, "
+                    "if you want to get an alt whitelisted, contact staff.")
+
+    async with db.execute(
+        "SELECT reviewed_at FROM applications WHERE guild = ? AND user_id = ? AND server_name = ? "
+        "AND status = 'denied' ORDER BY reviewed_at DESC LIMIT 1",
+        (guild_id, user_id, server_name)
+    ) as cursor:
+        row = await cursor.fetchone()
+
+    if row and row[0]:
+        reviewed = discord.utils.parse_time(row[0])
+        if reviewed is not None:
+            retry_at = reviewed + REAPPLY_COOLDOWN
+            if retry_at > discord.utils.utcnow():
+                return (f"⏳ Your last application for `{server_name}` was rejected. "
+                        f"You can apply again {discord.utils.format_dt(retry_at, style='R')}.")
+    return None
+
+
 async def submit_application(bot, user, guild_id, server_name, username, reason, verified):
     db = bot.tag_db
 
@@ -165,9 +207,9 @@ async def submit_application(bot, user, guild_id, server_name, username, reason,
         if await cursor.fetchone() is None:
             return f"❌ `{server_name}` isn't a tracked server anymore.", None
 
-    existing = await get_pending_application(db, guild_id, user.id, server_name)
-    if existing is not None:
-        return f"⚠️ You already have a pending application (#{existing}) for `{server_name}`.", None
+    block = await get_application_block(db, guild_id, user.id, server_name)
+    if block:
+        return block, None
 
     channel = bot.get_channel(APPLICATION_CHANNEL_ID)
     if channel is None:
@@ -212,9 +254,9 @@ async def run_dm_application(bot, user, channel, guild_id, server_name):
     try:
         try:
             username, verified = await dm_ask(
-                bot, channel, user.id, USERNAME_PROMPT, validate_username_answer
+                bot, channel, user.id, question_prompt(1), validate_username_answer
             )
-            reason = await dm_ask(bot, channel, user.id, REASON_PROMPT, validate_reason_answer)
+            reason = await dm_ask(bot, channel, user.id, question_prompt(2), validate_reason_answer)
         except DMCancelled:
             await channel.send("🛑 Application cancelled. You can start again any time with `.apply`.")
             return
@@ -376,10 +418,10 @@ async def _get_by_confirm_message(db, message_id):
         return await cursor.fetchone()
 
 
-async def edit_confirm_message(user, message_id, content):
+async def remove_confirm_buttons(user, message_id):
     try:
         dm = user.dm_channel or await user.create_dm()
-        await dm.get_partial_message(message_id).edit(content=content, view=None)
+        await dm.get_partial_message(message_id).edit(view=None)
     except discord.HTTPException:
         pass
 
@@ -416,8 +458,9 @@ class CorrectUsernameModal(discord.ui.Modal):
             return
 
         done_text = f"✅ You're whitelisted as `{result}`! See you in game."
-        await interaction.edit_original_response(content=done_text, view=None)
-        await edit_confirm_message(interaction.user, self.confirm_message_id, done_text)
+        await interaction.edit_original_response(view=None)
+        await remove_confirm_buttons(interaction.user, self.confirm_message_id)  # removes Yes/No buttons
+        await interaction.followup.send(done_text)
         await notify_staff(
             interaction.client, self.application_message_id,
             f"✅ Whitelisted `{result}` (applied as `{self.applied_name}`, corrected by the applicant)."
@@ -455,7 +498,7 @@ async def run_dm_correction(bot, user, channel, app_id, applied_name, confirm_me
             return
 
         done_text = f"✅ You're whitelisted as `{result}`! See you in game."
-        await edit_confirm_message(user, confirm_message_id, done_text)
+        await remove_confirm_buttons(user, confirm_message_id)
         await channel.send(done_text)
         await notify_staff(
             bot, application_message_id,
@@ -526,9 +569,8 @@ class UsernameConfirmView(discord.ui.View):
             await interaction.followup.send(result, ephemeral=True)
             return
 
-        await interaction.edit_original_response(
-            content=f"✅ You're whitelisted as `{result}`! See you in game.", view=None
-        )
+        await interaction.edit_original_response(view=None)  # just remove the damn buttons
+        await interaction.followup.send(f"✅ You're whitelisted as `{result}`! See you in game.")
         await notify_staff(interaction.client, application_message_id, f"✅ Whitelisted `{result}`.")
 
     @discord.ui.button(
@@ -634,6 +676,12 @@ class MethodChoiceView(discord.ui.View):
 
     @discord.ui.button(label="Fill out a popup", style=discord.ButtonStyle.primary, emoji="📋")
     async def popup(self, button: discord.ui.Button, interaction: discord.Interaction):
+        block = await get_application_block(
+            self.cog.bot.tag_db, interaction.guild_id, interaction.user.id, self.server_name
+        )
+        if block:
+            await interaction.response.send_message(block, ephemeral=True)
+            return
         await interaction.response.send_modal(ApplicationModal(self.cog, self.server_name))
 
     @discord.ui.button(label="Answer in DMs", style=discord.ButtonStyle.secondary, emoji="💬")
@@ -649,22 +697,19 @@ class MethodChoiceView(discord.ui.View):
 
         await interaction.response.defer()
 
-        existing = await get_pending_application(
+        block = await get_application_block(
             self.cog.bot.tag_db, interaction.guild_id, user.id, self.server_name
         )
-        if existing is not None:
+        if block:
             ACTIVE_DM_SESSIONS.discard(user.id)
-            await interaction.followup.send(
-                f"⚠️ You already have a pending application (#{existing}) for `{self.server_name}`.",
-                ephemeral=True
-            )
+            await interaction.followup.send(block, ephemeral=True)
             return
 
         try:
             channel = await user.create_dm()
             await channel.send(
                 f"📬 **Whitelist application for `{self.server_name}`**\n"
-                f"I'll ask you 2 questions, one at a time. Just reply to each in this chat.\n" # 2 for now.. too lazy to make it change automatically.
+                f"I'll ask you {TOTAL_QUESTIONS} questions, one at a time. Just reply to each in this chat.\n"
                 f"Type `cancel` at any time to stop. If you don't answer for "
                 f"{DM_ANSWER_TIMEOUT // 60} minutes, I'll cancel automatically."
             )
