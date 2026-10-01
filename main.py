@@ -171,6 +171,22 @@ async def setup_database(bot):
             pass
 
     await bot.tag_db.execute(
+        """CREATE TABLE IF NOT EXISTS applications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guild INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            server_name TEXT NOT NULL,
+            mc_username TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            message_id INTEGER,
+            created_at TEXT NOT NULL,
+            reviewer_id INTEGER,
+            reviewed_at TEXT
+        )"""
+    )
+
+    await bot.tag_db.execute(
         """CREATE TABLE IF NOT EXISTS larp_scores (
             guild INTEGER NOT NULL,
             user_id INTEGER NOT NULL,
@@ -248,6 +264,7 @@ async def main():
         bot.load_extension('larp_cog')
         bot.load_extension('utility_cog')
         bot.load_extension('afk_cog')
+        bot.load_extension('application_cog')
 
         await register_tag_command_aliases(bot)
 

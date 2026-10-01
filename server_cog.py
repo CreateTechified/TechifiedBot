@@ -38,6 +38,74 @@ def is_staff():
     return commands.check(predicate)
 
 
+class AddServerModal(discord.ui.Modal):
+
+    def __init__(self, cog, name: str, hide_ip: bool):
+        super().__init__(title=f"Add server: {name}"[:45])
+        self.cog = cog
+        self.server_name = name
+        self.hide_ip = hide_ip
+
+        self.host_input = discord.ui.InputText(
+            label="Server IP / address",
+            placeholder="e.g. play.example.com",
+            style=discord.InputTextStyle.short,
+            required=True,
+            max_length=253,
+        )
+        self.port_input = discord.ui.InputText(
+            label="Port (optional)",
+            placeholder=f"Leave empty to use {DEFAULT_MC_PORT}",
+            style=discord.InputTextStyle.short,
+            required=False,
+            max_length=5,
+        )
+        self.add_item(self.host_input)
+        self.add_item(self.port_input)
+
+    async def callback(self, interaction: discord.Interaction):
+        host = (self.host_input.value or "").strip()
+        port_text = (self.port_input.value or "").strip()
+
+        if not port_text and host.count(":") == 1:
+            maybe_host, _, maybe_port = host.partition(":")
+            if maybe_host and maybe_port.isdigit():
+                host, port_text = maybe_host, maybe_port
+
+        if not host or any(c.isspace() for c in host):
+            await interaction.response.send_message(
+                "❌ That doesn't look like a valid address.", ephemeral=True
+            )
+            return
+
+        if port_text:
+            if not port_text.isdigit() or not (1 <= int(port_text) <= 65535):
+                await interaction.response.send_message(
+                    "❌ The port must be a number between 1 and 65535.", ephemeral=True
+                )
+                return
+            port = int(port_text)
+        else:
+            port = DEFAULT_MC_PORT
+
+        if await self.cog._get_server(interaction.guild_id, self.server_name) is not None:
+            await interaction.response.send_message(
+                f"❌ A server named `{self.server_name}` is already tracked.", ephemeral=True
+            )
+            return
+
+        await self.cog.bot.tag_db.execute(
+            "INSERT INTO mc_servers (guild, name, host, port, creator, hide_ip) VALUES (?, ?, ?, ?, ?, ?)",
+            (interaction.guild_id, self.server_name, host, port, interaction.user.id, int(self.hide_ip))
+        )
+        await self.cog.bot.tag_db.commit()
+
+        shown = "address hidden" if self.hide_ip else f"`{host}:{port}`"
+        await interaction.response.send_message(
+            f"✅ Now tracking `{self.server_name}` ({shown}). Check it with `.mcstatus {self.server_name}`."
+        )
+
+
 class ServerManagement(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -100,12 +168,9 @@ class ServerManagement(commands.Cog):
     async def server_add(
         self, ctx,
         name: Option(str, "A short name for this server, e.g. 'survival'"),
-        host: Option(str, "Server address, e.g. play.example.com"),
-        port: Option(int, "Server port", required=False, default=DEFAULT_MC_PORT),
         hide_ip: Option(bool, "Hide the address in /mcstatus and the server list", required=False, default=False),
     ):
         name = name.strip().lower()
-        host = host.strip()
 
         if not name:
             await ctx.respond("❌ Give the server a name.", ephemeral=True)
@@ -118,14 +183,7 @@ class ServerManagement(commands.Cog):
             )
             return
 
-        await self.bot.tag_db.execute(
-            "INSERT INTO mc_servers (guild, name, host, port, creator, hide_ip) VALUES (?, ?, ?, ?, ?, ?)",
-            (ctx.guild.id, name, host, port, ctx.author.id, int(hide_ip))
-        )
-        await self.bot.tag_db.commit()
-
-        shown = "address hidden" if hide_ip else f"`{host}:{port}`"
-        await ctx.respond(f"✅ Now tracking `{name}` ({shown}). Check it with `.mcstatus {name}`.")
+        await ctx.send_modal(AddServerModal(self, name, hide_ip))
 
     @server_group.command(name="remove", description="Stop tracking a Minecraft server (staff only)")
     @is_staff()
