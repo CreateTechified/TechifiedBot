@@ -1,10 +1,19 @@
 import asyncio
+import os
 import uuid
 
 import requests
 
 PROFILE_URL = "https://api.minecraftservices.com/minecraft/profile/lookup/name/{name}"
 WHITELIST_URL = "https://whitelistsync.com/api/whitelist"
+
+
+def get_api_key():
+    return os.getenv("WLS_API_KEY") or None
+
+
+def _headers():
+    return {"X-API-KEY": get_api_key() or ""}
 
 
 async def lookup_profile(name: str):
@@ -34,21 +43,32 @@ async def lookup_profile(name: str):
     return "error", None, None
 
 
-async def whitelist_add(api_key: str, player_uuid: str):
-    headers = {"X-API-KEY": api_key or ""}
+async def whitelist_add(player_uuid: str):
+    """Returns (ok, status_code). status_code is None if the request itself failed."""
     try:
         resp = await asyncio.to_thread(
-            requests.post, WHITELIST_URL, headers=headers, json={"uuid": player_uuid}, timeout=15
+            requests.post, WHITELIST_URL, headers=_headers(), json={"uuid": player_uuid}, timeout=15
         )
     except requests.RequestException:
         return False, None
     return resp.status_code < 400, resp.status_code
 
 
-async def whitelist_names(api_key: str):
-    headers = {"X-API-KEY": api_key or ""}
+async def whitelist_remove(player_uuid: str):
+    """Returns (ok, status_code). status_code is None if the request itself failed."""
     try:
-        resp = await asyncio.to_thread(requests.get, WHITELIST_URL, headers=headers, timeout=15)
+        resp = await asyncio.to_thread(
+            requests.delete, f"{WHITELIST_URL}/{player_uuid}", headers=_headers(), timeout=15
+        )
+    except requests.RequestException:
+        return False, None
+    return resp.status_code < 400, resp.status_code
+
+
+async def whitelist_names():
+    """Returns a set of lowercase whitelisted names, or None if the API couldn't be queried."""
+    try:
+        resp = await asyncio.to_thread(requests.get, WHITELIST_URL, headers=_headers(), timeout=15)
     except requests.RequestException:
         return None
 

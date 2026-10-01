@@ -1,13 +1,14 @@
-import asyncio
-import uuid
-
 import discord
-import requests
 from discord.ext import commands
 from discord.commands import SlashCommandGroup, Option
 
 from page_embeds import send_paged
-from mc_utils import whitelist_add as ws_whitelist_add, whitelist_names as ws_whitelist_names
+from mc_utils import (
+    get_api_key, lookup_profile,
+    whitelist_add as ws_whitelist_add,
+    whitelist_remove as ws_whitelist_remove,
+    whitelist_names as ws_whitelist_names,
+)
 
 try:
     from mcstatus import JavaServer
@@ -21,7 +22,11 @@ OWNER_ROLE_ID = 1286650794053210122
 ALLOWED_ROLE_IDS = {ADMIN_ROLE_ID, MODERATOR_ROLE_ID, OWNER_ROLE_ID}
 
 DEFAULT_MC_PORT = 25565
-WHITELIST_URL = "https://whitelistsync.com/api/whitelist"
+
+NO_KEY_MESSAGE = (
+    "❌ No WhitelistSync API key is configured. Add `WLS_API_KEY=...` to the bot's `.env` and restart it."
+)
+
 
 def is_staff():
     async def predicate(ctx: discord.ApplicationContext) -> bool:
@@ -62,21 +67,12 @@ class AddServerModal(discord.ui.Modal):
             required=False,
             max_length=5,
         )
-        self.wls_key_input = discord.ui.InputText(
-            label="WhitelistSync API key (optional)",
-            placeholder="From this server's own WhitelistSync server group — leave empty to set later",
-            style=discord.InputTextStyle.short,
-            required=False,
-            max_length=200,
-        )
         self.add_item(self.host_input)
         self.add_item(self.port_input)
-        self.add_item(self.wls_key_input)
 
     async def callback(self, interaction: discord.Interaction):
         host = (self.host_input.value or "").strip()
         port_text = (self.port_input.value or "").strip()
-        wls_api_key = (self.wls_key_input.value or "").strip() or None
 
         if not port_text and host.count(":") == 1:
             maybe_host, _, maybe_port = host.partition(":")
@@ -106,19 +102,14 @@ class AddServerModal(discord.ui.Modal):
             return
 
         await self.cog.bot.tag_db.execute(
-            "INSERT INTO mc_servers (guild, name, host, port, creator, hide_ip, wls_api_key) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (interaction.guild_id, self.server_name, host, port, interaction.user.id, int(self.hide_ip), wls_api_key)
+            "INSERT INTO mc_servers (guild, name, host, port, creator, hide_ip) VALUES (?, ?, ?, ?, ?, ?)",
+            (interaction.guild_id, self.server_name, host, port, interaction.user.id, int(self.hide_ip))
         )
         await self.cog.bot.tag_db.commit()
 
         shown = "address hidden" if self.hide_ip else f"`{host}:{port}`"
-        key_note = "" if wls_api_key else (
-            "\n⚠️ No WhitelistSync API key set yet — `/whitelist` commands for this server won't work "
-            f"until you run `/server update {self.server_name}` with one."
-        )
         await interaction.response.send_message(
-            f"✅ Now tracking `{self.server_name}` ({shown}). Check it with `.mcstatus {self.server_name}`.{key_note}"
+            f"✅ Now tracking `{self.server_name}` ({shown}). Check it with `.mcstatus {self.server_name}`."
         )
 
 
@@ -126,20 +117,8 @@ class ServerManagement(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    whitelist_group = SlashCommandGroup("whitelist", "Manage a Minecraft server's whitelist (staff only)")
+    whitelist_group = SlashCommandGroup("whitelist", "Manage the network-wide whitelist (staff only)")
     server_group = SlashCommandGroup("server", "Manage the Minecraft server(s) tracked in this Discord server")
-
-    async def _get_uuid(self, name: str):
-        """Looks up a Mojang UUID for a username. Returns None if the account doesn't exist."""
-        resp = await asyncio.to_thread(
-            requests.get, f"https://api.minecraftservices.com/minecraft/profile/lookup/name/{name}"
-        )
-        if resp.status_code != 200:
-            return None
-        data = resp.json()
-        if "id" not in data:
-            return None
-        return str(uuid.UUID(data["id"]))
 
     @staticmethod
     async def _reply(ctx, *args, **kwargs):
@@ -147,18 +126,18 @@ class ServerManagement(commands.Cog):
             return await ctx.respond(*args, **kwargs)
         return await ctx.send(*args, **kwargs)
 
-    # ---------- multi-server config helpers ----------
+    # ---------- server tracking helpers (used by /mcstatus only) ----------
 
     async def _get_server(self, guild_id: int, name: str):
         async with self.bot.tag_db.execute(
-            "SELECT host, port, hide_ip, wls_api_key FROM mc_servers WHERE guild = ? AND name = ?",
+            "SELECT host, port, hide_ip FROM mc_servers WHERE guild = ? AND name = ?",
             (guild_id, name)
         ) as cursor:
             return await cursor.fetchone()
 
     async def _list_servers(self, guild_id: int):
         async with self.bot.tag_db.execute(
-            "SELECT name, host, port, hide_ip, wls_api_key FROM mc_servers WHERE guild = ? ORDER BY name",
+            "SELECT name, host, port, hide_ip FROM mc_servers WHERE guild = ? ORDER BY name",
             (guild_id,)
         ) as cursor:
             return await cursor.fetchall()
@@ -216,7 +195,7 @@ class ServerManagement(commands.Cog):
 
         await ctx.respond(f"✅ Stopped tracking `{name}`.")
 
-    @server_group.command(name="update", description="Update a tracked server's address, port, visibility and/or WhitelistSync key (staff only)")
+    @server_group.command(name="update", description="Update a tracked server's address, port and/or visibility (staff only)")
     @is_staff()
     async def server_update(
         self, ctx,
@@ -224,7 +203,6 @@ class ServerManagement(commands.Cog):
         host: Option(str, "New server address", required=False, default=None),
         port: Option(int, "New server port", required=False, default=None),
         hide_ip: Option(bool, "True to hide the address publicly, False to show it", required=False, default=None),
-        wls_api_key: Option(str, "New WhitelistSync API key for this server", required=False, default=None),
     ):
         name = name.strip().lower()
         existing = await self._get_server(ctx.guild.id, name)
@@ -232,32 +210,25 @@ class ServerManagement(commands.Cog):
             await ctx.respond(f"❌ No tracked server named `{name}`.", ephemeral=True)
             return
 
-        if host is None and port is None and hide_ip is None and wls_api_key is None:
+        if host is None and port is None and hide_ip is None:
             await ctx.respond(
-                "❌ Provide a new host, port, hide_ip and/or wls_api_key setting to update.", ephemeral=True
+                "❌ Provide a new host, port and/or hide_ip setting to update.", ephemeral=True
             )
             return
 
-        old_host, old_port, old_hide_ip, old_wls_api_key = existing
+        old_host, old_port, old_hide_ip = existing
         new_host = host.strip() if host else old_host
         new_port = port if port is not None else old_port
         new_hide_ip = bool(old_hide_ip) if hide_ip is None else hide_ip
-        new_wls_api_key = wls_api_key.strip() if wls_api_key is not None else old_wls_api_key
 
         await self.bot.tag_db.execute(
-            "UPDATE mc_servers SET host = ?, port = ?, hide_ip = ?, wls_api_key = ? WHERE guild = ? AND name = ?",
-            (new_host, new_port, int(new_hide_ip), new_wls_api_key, ctx.guild.id, name)
+            "UPDATE mc_servers SET host = ?, port = ?, hide_ip = ? WHERE guild = ? AND name = ?",
+            (new_host, new_port, int(new_hide_ip), ctx.guild.id, name)
         )
         await self.bot.tag_db.commit()
 
-        parts = []
-        if new_hide_ip:
-            parts.append("address hidden")
-        else:
-            parts.append(f"`{new_host}:{new_port}`")
-        if wls_api_key is not None:
-            parts.append("WhitelistSync key updated" if new_wls_api_key else "WhitelistSync key cleared")
-        await ctx.respond(f"✅ Updated `{name}` ({', '.join(parts)}).")
+        shown = "address hidden" if new_hide_ip else f"`{new_host}:{new_port}`"
+        await ctx.respond(f"✅ Updated `{name}` ({shown}).")
 
     async def _send_server_list(self, ctx):
         servers = await self._list_servers(ctx.guild.id)
@@ -268,7 +239,7 @@ class ServerManagement(commands.Cog):
 
         items = [
             f"`{name}` — " + ("*address hidden*" if hide_ip else f"`{host}:{port}`")
-            for name, host, port, hide_ip, _ in servers
+            for name, host, port, hide_ip in servers
         ]
         await send_paged(
             ctx, f"🖥️ Minecraft servers in {ctx.guild.name}",
@@ -313,7 +284,7 @@ class ServerManagement(commands.Cog):
         if error:
             return None, error
 
-        server_name, host, port, hide_ip, _ = match
+        server_name, host, port, hide_ip = match
 
         try:
             mc_server = JavaServer.lookup(f"{host}:{port}")
@@ -377,132 +348,109 @@ class ServerManagement(commands.Cog):
 
         await ctx.send(embed=embed)
 
-    # ---------- whitelist (per-server: each server has its own WhitelistSync API key) ----------
+    # ---------- whitelist (global: one WhitelistSync key for everything) ----------
 
-    async def _resolve_whitelist_server(self, ctx, name):
-        match, error = await self._resolve_single_server(ctx.guild.id, name)
-        if error:
-            await ctx.respond(error)
-            return None
-
-        server_name, _host, _port, _hide_ip, wls_api_key = match
-        if not wls_api_key:
-            await ctx.respond(
-                f"❌ `{server_name}` has no WhitelistSync API key configured. "
-                f"Set one with `/server update {server_name}`.",
-                ephemeral=True
-            )
-            return None
-
-        return server_name, wls_api_key
-
-    @whitelist_group.command(name="list", description="List all whitelisted players on a tracked server")
+    @whitelist_group.command(name="list", description="List all whitelisted players")
     @is_staff()
-    async def whitelist_list(
-        self, ctx,
-        server: Option(str, "Server name; optional if only one is tracked", required=False, default=None, autocomplete=server_name_autocomplete),
-    ):
+    async def whitelist_list(self, ctx):
+        if not get_api_key():
+            await ctx.respond(NO_KEY_MESSAGE, ephemeral=True)
+            return
+
         await ctx.defer()
 
-        resolved = await self._resolve_whitelist_server(ctx, server)
-        if resolved is None:
-            return
-        server_name, api_key = resolved
-
-        names = await ws_whitelist_names(api_key)
+        names = await ws_whitelist_names()
         if names is None:
-            await ctx.respond(f"❌ WhitelistSync API error while checking `{server_name}`'s whitelist.")
+            await ctx.respond("❌ WhitelistSync API error while reading the whitelist.")
             return
 
         if not names:
-            await ctx.respond(f"*No players whitelisted on `{server_name}`.*")
+            await ctx.respond("*No players whitelisted.*")
             return
 
         await send_paged(
-            ctx, f"📑 Whitelisted players on `{server_name}`",
+            ctx, "📑 Whitelisted players",
             [f"`{name}`" for name in sorted(names)],
             discord.Color.blurple(), noun="player(s)"
         )
 
-    @whitelist_group.command(name="add", description="Add a player to a tracked server's whitelist")
+    @whitelist_group.command(name="add", description="Add a player to the whitelist")
     @is_staff()
     async def whitelist_add(
         self, ctx,
         name: Option(str, "Minecraft username"),
-        server: Option(str, "Server name; optional if only one is tracked", required=False, default=None, autocomplete=server_name_autocomplete),
     ):
+        if not get_api_key():
+            await ctx.respond(NO_KEY_MESSAGE, ephemeral=True)
+            return
+
         await ctx.defer()
 
-        resolved = await self._resolve_whitelist_server(ctx, server)
-        if resolved is None:
-            return
-        server_name, api_key = resolved
-
-        player_uuid = await self._get_uuid(name)
-        if player_uuid is None:
+        state, canonical, player_uuid = await lookup_profile(name)
+        if state == "not_found":
             await ctx.respond(f"❌ Couldn't find a Minecraft account named `{name}`.")
             return
-
-        ok, code = await ws_whitelist_add(api_key, player_uuid)
-        if not ok:
-            detail = f" (API returned {code})" if code else ""
-            await ctx.respond(f"❌ Failed to whitelist `{name}` on `{server_name}`{detail}.")
+        if state == "error":
+            await ctx.respond("❌ I couldn't reach Mojang to check that name. Try again in a minute.")
             return
 
-        await ctx.respond(f"✅ Whitelisted `{name}` on `{server_name}`.")
+        ok, code = await ws_whitelist_add(player_uuid)
+        if not ok:
+            detail = f" (API returned {code})" if code else ""
+            await ctx.respond(f"❌ Failed to whitelist `{canonical}`{detail}.")
+            return
 
-    @whitelist_group.command(name="remove", description="Remove a player from a tracked server's whitelist")
+        await ctx.respond(f"✅ Whitelisted `{canonical}`.")
+
+    @whitelist_group.command(name="remove", description="Remove a player from the whitelist")
     @is_staff()
     async def whitelist_remove(
         self, ctx,
         name: Option(str, "Minecraft username"),
-        server: Option(str, "Server name; optional if only one is tracked", required=False, default=None, autocomplete=server_name_autocomplete),
     ):
+        if not get_api_key():
+            await ctx.respond(NO_KEY_MESSAGE, ephemeral=True)
+            return
+
         await ctx.defer()
 
-        resolved = await self._resolve_whitelist_server(ctx, server)
-        if resolved is None:
-            return
-        server_name, api_key = resolved
-
-        player_uuid = await self._get_uuid(name)
-        if player_uuid is None:
+        state, canonical, player_uuid = await lookup_profile(name)
+        if state == "not_found":
             await ctx.respond(f"❌ Couldn't find a Minecraft account named `{name}`.")
             return
-
-        headers = {"X-API-KEY": api_key}
-        resp = await asyncio.to_thread(
-            requests.delete, f"{WHITELIST_URL}/{player_uuid}", headers=headers
-        )
-        if resp.status_code >= 400:
-            await ctx.respond(f"❌ Failed to unwhitelist `{name}` on `{server_name}` (API returned {resp.status_code}).")
+        if state == "error":
+            await ctx.respond("❌ I couldn't reach Mojang to check that name. Try again in a minute.")
             return
 
-        await ctx.respond(f"✅ Unwhitelisted `{name}` from `{server_name}`.")
+        ok, code = await ws_whitelist_remove(player_uuid)
+        if not ok:
+            detail = f" (API returned {code})" if code else ""
+            await ctx.respond(f"❌ Failed to unwhitelist `{canonical}`{detail}.")
+            return
 
-    @whitelist_group.command(name="check", description="Check whether a player is whitelisted on a tracked server")
+        await ctx.respond(f"✅ Unwhitelisted `{canonical}`.")
+
+    @whitelist_group.command(name="check", description="Check whether a player is whitelisted")
     @is_staff()
     async def whitelist_check(
         self, ctx,
         name: Option(str, "Minecraft username"),
-        server: Option(str, "Server name; optional if only one is tracked", required=False, default=None, autocomplete=server_name_autocomplete),
     ):
+        if not get_api_key():
+            await ctx.respond(NO_KEY_MESSAGE, ephemeral=True)
+            return
+
         await ctx.defer()
 
-        resolved = await self._resolve_whitelist_server(ctx, server)
-        if resolved is None:
-            return
-        server_name, api_key = resolved
-
-        names = await ws_whitelist_names(api_key)
+        names = await ws_whitelist_names()
         if names is None:
-            await ctx.respond(f"❌ WhitelistSync API error while checking `{server_name}`'s whitelist.")
+            await ctx.respond("❌ WhitelistSync API error while reading the whitelist.")
             return
 
         if name.lower() in names:
-            await ctx.respond(f"✅ `{name}` is whitelisted on `{server_name}`.")
+            await ctx.respond(f"✅ `{name}` is whitelisted.")
         else:
-            await ctx.respond(f"❌ `{name}` is **not** whitelisted on `{server_name}`.")
+            await ctx.respond(f"❌ `{name}` is **not** whitelisted.")
 
 
 def setup(bot):

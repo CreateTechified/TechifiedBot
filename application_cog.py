@@ -482,7 +482,7 @@ async def _get_by_confirm_message(db, message_id):
         return await cursor.fetchone()
 
 
-TEST_NOTE = " 🧪 *Test application: nothing was actually whitelisted.*"
+TEST_NOTE = " 🧪 **[TEST]**: *nothing was actually whitelisted.*"
 
 
 async def test_note(db, app_id):
@@ -786,7 +786,7 @@ class MethodChoiceView(discord.ui.View):
         try:
             channel = await user.create_dm()
             await channel.send(
-                f"📬 **Whitelist application for `{self.server_name}`**{' 🧪 *(test mode)*' if self.test else ''}\n"
+                f"📬 **Whitelist application for `{self.server_name}`**{' 🧪 **[TEST]**' if self.test else ''}\n"
                 f"I'll ask you {TOTAL_QUESTIONS} questions, one at a time. Just reply to each in this chat.\n"
                 f"Type `cancel` at any time to stop. If you don't answer for "
                 f"{DM_ANSWER_TIMEOUT // 60} minutes, I'll cancel automatically."
@@ -988,7 +988,7 @@ class Applications(commands.Cog):
         elif len(names) == 1:
             server = names[0]
 
-        prefix = "🧪 **Test mode:** nothing will actually be whitelisted.\n" if test else ""
+        prefix = "🧪 **[TEST]**: *nothing will actually be whitelisted.*\n" if test else ""
         if server:
             await reply(
                 f"{prefix}How would you like to apply for `{server}`?",
