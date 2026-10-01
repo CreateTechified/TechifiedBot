@@ -24,7 +24,7 @@ ALLOWED_ROLE_IDS = {ADMIN_ROLE_ID, MODERATOR_ROLE_ID, OWNER_ROLE_ID}
 DEFAULT_MC_PORT = 25565
 
 NO_KEY_MESSAGE = (
-    "❌ No WhitelistSync API key is configured. Add `WLS_API_KEY=...` to the bot's `.env` and restart it."
+    "❌ No WhitelistSync API key is configured. Add `WLS_TOKEN=...` to the bot's `.env` and restart it."
 )
 
 

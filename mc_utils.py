@@ -9,7 +9,7 @@ WHITELIST_URL = "https://whitelistsync.com/api/whitelist"
 
 
 def get_api_key():
-    return os.getenv("WLS_API_KEY") or None
+    return os.getenv("WLS_TOKEN") or None
 
 
 def _headers():
