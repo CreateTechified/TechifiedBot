@@ -296,7 +296,7 @@ async def run_dm_application(bot, user, channel, guild_id, server_name, test=Fal
             return
 
         await channel.send(
-            f"✅ Your application for `{server_name}` was submitted! Staff will review it soon. "
+            f"✅ Your application for `{server_name}` has been submitted! Staff will review it soon. "
             f"Here's a copy of your answers:",
             embed=build_summary_embed(app_id, server_name, username, reason)
         )
@@ -689,7 +689,7 @@ class ApplicationModal(discord.ui.Modal):
             return
 
         await interaction.followup.send(
-            f"✅ Your application for `{self.server_name}` was submitted! Staff will review it soon. "
+            f"✅ Your application for `{self.server_name}` has been submitted! Staff will review it soon. "
             f"Here's a copy of your answers:",
             embed=build_summary_embed(app_id, self.server_name, username, reason),
             ephemeral=True
