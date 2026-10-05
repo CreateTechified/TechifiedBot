@@ -258,6 +258,27 @@ async def setup_database(bot):
         )"""
     )
 
+    await bot.tag_db.execute(
+        """CREATE TABLE IF NOT EXISTS tickets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guild INTEGER NOT NULL,
+            channel_id INTEGER,
+            user_id INTEGER NOT NULL,
+            subject TEXT NOT NULL,
+            details TEXT NOT NULL,
+            urgency TEXT NOT NULL DEFAULT 'low',
+            status TEXT NOT NULL DEFAULT 'open',
+            created_at TEXT NOT NULL,
+            last_activity TEXT NOT NULL,
+            closed_at TEXT,
+            closed_by INTEGER,
+            claimed_by INTEGER,
+            auto_close INTEGER NOT NULL DEFAULT 1,
+            reminded INTEGER NOT NULL DEFAULT 0,
+            delete_at TEXT
+        )"""
+    )
+
     await bot.tag_db.commit()
 
 async def register_persistent_views(bot):
@@ -296,6 +317,7 @@ async def main():
         bot.load_extension('utility_cog')
         bot.load_extension('afk_cog')
         bot.load_extension('application_cog')
+        bot.load_extension('tickets_cog')
 
         await register_tag_command_aliases(bot)
 

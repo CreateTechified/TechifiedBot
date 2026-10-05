@@ -239,6 +239,10 @@ class CommunityHelp(commands.Cog):
 
     @commands.command(name="close")
     async def close_thread(self, ctx):
+        tickets = self.bot.get_cog("Tickets")
+        if tickets and await tickets.handle_close(ctx):
+            return
+
         thread = self._resolve_thread(ctx.channel)
         if thread is None:
             return
@@ -255,9 +259,13 @@ class CommunityHelp(commands.Cog):
 
     @discord.slash_command(name="forceclose", description="Force-close any support thread (staff only)")
     async def forceclose_thread(self, ctx: discord.ApplicationContext):
+        tickets = self.bot.get_cog("Tickets")
+        if tickets and await tickets.handle_forceclose(ctx):
+            return
+
         thread = self._resolve_thread(ctx.channel)
         if thread is None:
-            await ctx.respond("❌ This command can only be used inside a support thread.", ephemeral=True)
+            await ctx.respond("❌ This command can only be used inside a support thread or ticket.", ephemeral=True)
             return
 
         if not ctx.author.guild_permissions.manage_messages:
@@ -269,6 +277,10 @@ class CommunityHelp(commands.Cog):
 
     @commands.command(name="reopen")
     async def reopen_thread(self, ctx):
+        tickets = self.bot.get_cog("Tickets")
+        if tickets and await tickets.handle_reopen(ctx):
+            return
+
         thread = self._resolve_thread(ctx.channel)
         if thread is None:
             return
