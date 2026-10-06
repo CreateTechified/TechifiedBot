@@ -275,26 +275,7 @@ class CommunityHelp(commands.Cog):
         await ctx.defer()
         await self._finish_close(thread, ctx.respond)
 
-    @commands.command(name="reopen")
-    async def reopen_thread(self, ctx):
-        tickets = self.bot.get_cog("Tickets")
-        if tickets and await tickets.handle_reopen(ctx):
-            return
-
-        thread = self._resolve_thread(ctx.channel)
-        if thread is None:
-            return
-
-        requester_id, closed = await self._get_thread_row(thread)
-        is_staff = ctx.author.guild_permissions.manage_messages
-        if ctx.author.id != requester_id and not is_staff:
-            await ctx.send("❌ Only the person who opened this thread (or staff) can reopen it.")
-            return
-
-        if not closed:
-            await ctx.send("This thread isn't closed.")
-            return
-
+    async def _finish_reopen(self, thread, respond):
         await self.bot.tag_db.execute(
             "UPDATE help_threads SET closed = 0, closed_at = NULL WHERE thread_id = ?", (thread.id,)
         )
@@ -306,7 +287,54 @@ class CommunityHelp(commands.Cog):
         except discord.HTTPException:
             pass
 
-        await ctx.send("🔓 **This thread has been reopened.** Anyone can message here again.")
+        await respond("🔓 **This thread has been reopened.** Anyone can message here again.")
+
+    @commands.command(name="reopen")
+    async def reopen_thread(self, ctx):
+        tickets = self.bot.get_cog("Tickets")
+        if tickets and await tickets.handle_reopen(ctx):
+            return
+
+        thread = self._resolve_thread(ctx.channel)
+        if thread is None:
+            return
+
+        requester_id, closed = await self._get_thread_row(thread)
+        if ctx.author.id != requester_id:
+            await ctx.send(
+                "❌ Only the person who opened this thread can `.reopen` it. "
+                "Staff should use `/forcereopen` instead."
+            )
+            return
+
+        if not closed:
+            await ctx.send("This thread isn't closed.")
+            return
+
+        await self._finish_reopen(thread, ctx.send)
+
+    @discord.slash_command(name="forcereopen", description="Force-reopen a closed support thread or ticket (staff only)")
+    async def forcereopen_thread(self, ctx: discord.ApplicationContext):
+        tickets = self.bot.get_cog("Tickets")
+        if tickets and await tickets.handle_forcereopen(ctx):
+            return
+
+        thread = self._resolve_thread(ctx.channel)
+        if thread is None:
+            await ctx.respond("❌ This command can only be used inside a support thread or ticket.", ephemeral=True)
+            return
+
+        if not ctx.author.guild_permissions.manage_messages:
+            await ctx.respond("❌ You don't have permission to use this command.", ephemeral=True)
+            return
+
+        _, closed = await self._get_thread_row(thread)
+        if not closed:
+            await ctx.respond("This thread isn't closed.", ephemeral=True)
+            return
+
+        await ctx.defer()
+        await self._finish_reopen(thread, ctx.respond)
 
 # LEAVE THIS NON-ASYNC! IT CRASHES!!!
 def setup(bot):

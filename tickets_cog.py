@@ -74,7 +74,6 @@ class TicketModal(discord.ui.Modal):
 
 
 class UrgencySelectView(discord.ui.View):
-
     def __init__(self, cog):
         super().__init__(timeout=120)
         self.cog = cog
@@ -113,7 +112,6 @@ class TicketPanelView(discord.ui.View):
 
 
 class TicketControlView(discord.ui.View):
-
     def __init__(self):
         super().__init__(timeout=None)
 
@@ -326,8 +324,11 @@ class Tickets(commands.Cog):
             return False
         if ticket["status"] == "closed":
             await ctx.send("This ticket is already closed.")
-        elif ctx.author.id != ticket["user_id"] and not is_staff_member(ctx.author):
-            await ctx.send("❌ Only the person who opened this ticket or staff can `.close` it.")
+        elif ctx.author.id != ticket["user_id"]:
+            await ctx.send(
+                "❌ Only the person who opened this ticket can `.close` it. "
+                "Staff should use `/forceclose` instead."
+            )
         else:
             await self._finish_close(ctx.channel, ticket, ctx.author.id, ctx.send, self._closed_text(ticket["id"]))
         return True
@@ -345,27 +346,44 @@ class Tickets(commands.Cog):
             await self._finish_close(ctx.channel, ticket, ctx.author.id, ctx.respond, self._closed_text(ticket["id"]))
         return True
 
-    async def handle_reopen(self, ctx) -> bool:
-        ticket = await self._get(ctx.channel.id)
-        if ticket is None:
-            return False
-        if ctx.author.id != ticket["user_id"] and not is_staff_member(ctx.author):
-            await ctx.send("❌ Only the person who opened this ticket (or staff) can reopen it.")
-            return True
-        if ticket["status"] != "closed":
-            await ctx.send("This ticket isn't closed.")
-            return True
-
+    async def _do_reopen(self, channel, ticket, send, reopened_by):
         await self.bot.tag_db.execute(
             "UPDATE tickets SET status = 'open', closed_at = NULL, closed_by = NULL, delete_at = NULL, "
             "last_activity = ?, reminded = 0 WHERE id = ?",
             (discord.utils.utcnow().isoformat(), ticket["id"])
         )
         await self.bot.tag_db.commit()
-        await ctx.send(f"🔓 **Ticket #{ticket['id']} has been reopened.** Anyone with access can message here again.")
-        await self._rename(ctx.channel, ctx.channel.name.replace("✅", "📦", 1))
+        await send(f"🔓 **Ticket #{ticket['id']} has been reopened.** Anyone with access can message here again.")
+        await self._rename(channel, channel.name.replace("✅", "📦", 1))
         await self._log("🔓 Ticket reopened", discord.Color.green(),
-                        f"**#{ticket['id']}** {ctx.channel.mention} reopened by {ctx.author.mention}")
+                        f"**#{ticket['id']}** {channel.mention} reopened by {reopened_by.mention}")
+
+    async def handle_reopen(self, ctx) -> bool:
+        ticket = await self._get(ctx.channel.id)
+        if ticket is None:
+            return False
+        if ctx.author.id != ticket["user_id"]:
+            await ctx.send(
+                "❌ Only the person who opened this ticket can `.reopen` it. "
+                "Staff should use `/forcereopen` instead."
+            )
+        elif ticket["status"] != "closed":
+            await ctx.send("This ticket isn't closed.")
+        else:
+            await self._do_reopen(ctx.channel, ticket, ctx.send, ctx.author)
+        return True
+
+    async def handle_forcereopen(self, ctx) -> bool:
+        ticket = await self._get(ctx.channel.id)
+        if ticket is None:
+            return False
+        if not is_staff_member(ctx.author):
+            await ctx.respond("❌ You don't have permission to use this command.", ephemeral=True)
+        elif ticket["status"] != "closed":
+            await ctx.respond("This ticket isn't closed.", ephemeral=True)
+        else:
+            await ctx.defer()
+            await self._do_reopen(ctx.channel, ticket, ctx.respond, ctx.author)
         return True
 
     # ---------- listener ----------
@@ -551,7 +569,7 @@ class Tickets(commands.Cog):
         await self.bot.tag_db.commit()
         await ctx.respond(
             f"🗑️ This ticket will be **permanently deleted** {discord.utils.format_dt(delete_at, style='R')}. "
-            "Run `/ticket canceldelete` (or `.reopen`) to stop it."
+            "Run `/ticket canceldelete` (or `/forcereopen`) to stop it."
         )
 
     @ticket_group.command(name="canceldelete", description="Cancel a scheduled ticket deletion")
