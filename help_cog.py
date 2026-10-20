@@ -257,7 +257,7 @@ class CommunityHelp(commands.Cog):
 
         await self._finish_close(thread, ctx.send)
 
-    @discord.slash_command(name="forceclose", description="Force-close any support thread (staff only)")
+    @discord.slash_command(name="forceclose", description="Force-close any support thread")
     async def forceclose_thread(self, ctx: discord.ApplicationContext):
         tickets = self.bot.get_cog("Tickets")
         if tickets and await tickets.handle_forceclose(ctx):
@@ -313,7 +313,7 @@ class CommunityHelp(commands.Cog):
 
         await self._finish_reopen(thread, ctx.send)
 
-    @discord.slash_command(name="forcereopen", description="Force-reopen a closed support thread or ticket (staff only)")
+    @discord.slash_command(name="forcereopen", description="Force-reopen a closed support thread or ticket")
     async def forcereopen_thread(self, ctx: discord.ApplicationContext):
         tickets = self.bot.get_cog("Tickets")
         if tickets and await tickets.handle_forcereopen(ctx):

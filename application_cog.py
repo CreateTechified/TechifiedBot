@@ -946,7 +946,7 @@ class Applications(commands.Cog):
         bot.add_view(ReviewView())
         bot.add_view(UsernameConfirmView())
 
-    application_group = SlashCommandGroup("application", "Whitelist application system (admin only)")
+    application_group = SlashCommandGroup("application", "Whitelist application system")
 
     async def _server_names(self, guild_id: int):
         async with self.bot.tag_db.execute(
@@ -1007,7 +1007,7 @@ class Applications(commands.Cog):
             return  # silently ignored: members must use the panel button
         await self._start_apply(ctx, server)
 
-    @discord.slash_command(name="apply", description="Apply for a whitelist (admin only). Use test=True to try it safely")
+    @discord.slash_command(name="apply", description="Apply for a whitelist. Use test=True to try it safely")
     async def apply_slash(
         self, ctx,
         server: Option(str, "Server to apply for", required=False, default=None, autocomplete=server_name_autocomplete),

@@ -27,6 +27,18 @@ ADMIN_ROLE_IDS = {ADMIN_ROLE_ID, OWNER_ROLE_ID}
 
 ADMIN_OVERRIDE_USER_IDS = {1023288254671376424, 872693345510637589}
 
+# --- PARTICLES ---
+PARTICLES = {
+    "electron": "⚡ Electron",
+    "proton": "➕ Proton",
+    "neutron": "⚪ Neutron",
+    "up_quark": "⬆️ Up-Quark",
+    "down-quark": "⬇️ Down-Quark",
+    "photon": "💡 Photon",
+}
+PARTICLE_CHOICES = [discord.OptionChoice(label, key) for key, label in PARTICLES.items()]
+MAX_PARTICLES_PER_ACTION = 1_000_000_000
+
 def is_staff():
     async def predicate(ctx: discord.ApplicationContext) -> bool:
         member = ctx.author
@@ -179,7 +191,7 @@ class SlashCommands(commands.Cog):
 
     # ---------- /tag (staff-only mirrors of the . commands) ----------
 
-    tag_group = SlashCommandGroup("tag", "View and manage tags (staff only)")
+    tag_group = SlashCommandGroup("tag", "View and manage tags")
 
     @tag_group.command(name="view", description="View a tag")
     @is_staff()
@@ -430,7 +442,7 @@ class SlashCommands(commands.Cog):
 
     # ---------- forcetag ----------
 
-    forcetag_group = SlashCommandGroup("forcetag", "Forcefully remove or overwrite any tag (staff only)")
+    forcetag_group = SlashCommandGroup("forcetag", "Forcefully remove or overwrite any tag")
 
     @forcetag_group.command(name="remove", description="Force-remove any tag or alias, regardless of who created it")
     @is_staff()
@@ -528,7 +540,7 @@ class SlashCommands(commands.Cog):
 
     # ---------- moderation ----------
 
-    warn_group = SlashCommandGroup("warn", "Warn members and view their warning history (staff only)")
+    warn_group = SlashCommandGroup("warn", "Warn members and view their warning history")
 
     @warn_group.command(name="add", description="Warn a member")
     @is_staff()
@@ -993,7 +1005,7 @@ class SlashCommands(commands.Cog):
     # Configured for Alpine Linux! May need to be changed for other environments.
     # Is this a bad idea? Probably.
 
-    system_group = SlashCommandGroup("systemctl", "System management (staff only)")
+    system_group = SlashCommandGroup("systemctl", "System management")
 
     @system_group.command(name="restart", description="Restart the bot's service.")
     @is_admin()
@@ -1030,6 +1042,104 @@ class SlashCommands(commands.Cog):
     async def sys_reboot(self, ctx):
         await ctx.respond("Restarting...", ephemeral=True)
         await asyncio.create_subprocess_shell("reboot")
+
+    # ---------- particles ----------
+    # for the funny
+
+    particles_group = SlashCommandGroup("particles", "Add, remove and view members' particles")
+
+    async def _get_particle(self, guild_id: int, user_id: int, particle: str) -> int:
+        async with self.bot.tag_db.execute(
+            "SELECT amount FROM particles WHERE guild = ? AND user_id = ? AND particle = ?",
+            (guild_id, user_id, particle)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return row[0] if row else 0
+
+    async def _change_particle(self, guild_id: int, user_id: int, particle: str, delta: int) -> int:
+        await self.bot.tag_db.execute(
+            "INSERT INTO particles (guild, user_id, particle, amount) VALUES (?, ?, ?, MAX(?, 0)) "
+            "ON CONFLICT(guild, user_id, particle) DO UPDATE SET amount = MAX(amount + ?, 0)",
+            (guild_id, user_id, particle, delta, delta)
+        )
+        await self.bot.tag_db.commit()
+        return await self._get_particle(guild_id, user_id, particle)
+
+    @particles_group.command(name="add", description="Give particles to a member")
+    @is_staff()
+    async def particles_add(
+        self, ctx,
+        particle: Option(str, "Which particle", choices=PARTICLE_CHOICES),
+        number_of_particles: Option(int, "How many to add", min_value=1, max_value=MAX_PARTICLES_PER_ACTION),
+        user: Option(discord.Member, "Who gets them (defaults to yourself)", required=False, default=None),
+    ):
+        target = user or ctx.author
+        label = PARTICLES.get(particle, particle)
+        total = await self._change_particle(ctx.guild.id, target.id, particle, number_of_particles)
+
+        await ctx.respond(
+            f"Added **{number_of_particles:,}** {label} to {target.mention}. "
+            f"They now have **{total:,}**.",
+            allowed_mentions=discord.AllowedMentions.none()
+        )
+        await self._log_action(
+            ctx, "➕ Particles Added", discord.Color.green(), target=target,
+            extra_fields={"Particle": label, "Amount": f"+{number_of_particles:,}", "New total": f"{total:,}"}
+        )
+
+    @particles_group.command(name="remove", description="Take particles from a member")
+    @is_staff()
+    async def particles_remove(
+        self, ctx,
+        particle: Option(str, "Which particle", choices=PARTICLE_CHOICES),
+        number_of_particles: Option(int, "How many to remove", min_value=1, max_value=MAX_PARTICLES_PER_ACTION),
+        user: Option(discord.Member, "Who to take them from (defaults to yourself)", required=False, default=None),
+    ):
+        target = user or ctx.author
+        label = PARTICLES.get(particle, particle)
+
+        before = await self._get_particle(ctx.guild.id, target.id, particle)
+        if before == 0:
+            await ctx.respond(
+                f"⚠️ {target.mention} has no {label} to remove.",
+                ephemeral=True, allowed_mentions=discord.AllowedMentions.none()
+            )
+            return
+
+        total = await self._change_particle(ctx.guild.id, target.id, particle, -number_of_particles)
+        removed = before - total
+        note = "" if removed == number_of_particles else f" (they only had {before:,}, so it stopped at 0)"
+
+        await ctx.respond(
+            f"Removed **{removed:,}** {label} from {target.mention}{note}. "
+            f"They now have **{total:,}**.",
+            allowed_mentions=discord.AllowedMentions.none()
+        )
+        await self._log_action(
+            ctx, "➖ Particles Removed", discord.Color.orange(), target=target,
+            extra_fields={"Particle": label, "Amount": f"-{removed:,}", "New total": f"{total:,}"}
+        )
+
+    @particles_group.command(name="view", description="See someone's particles")
+    @is_staff()
+    async def particles_view(
+        self, ctx,
+        user: Option(discord.Member, "Member to check (defaults to yourself)", required=False, default=None),
+    ):
+        target = user or ctx.author
+
+        async with self.bot.tag_db.execute(
+            "SELECT particle, amount FROM particles WHERE guild = ? AND user_id = ? AND amount > 0",
+            (ctx.guild.id, target.id)
+        ) as cursor:
+            rows = dict(await cursor.fetchall())
+
+        embed = discord.Embed(title=f"⚛️ Particles — {target.display_name}", color=discord.Color.blurple())
+        embed.set_thumbnail(url=target.display_avatar.url)
+        for key, label in PARTICLES.items():
+            embed.add_field(name=label, value=f"**{rows.get(key, 0):,}**", inline=True)
+
+        await ctx.respond(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     # ---------- misc ----------
 

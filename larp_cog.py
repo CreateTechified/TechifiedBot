@@ -72,10 +72,25 @@ def _pick_message(path, default, **kwargs):
 class LarpBoard(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self._enabled_cache = {}
 
-    larp_group = SlashCommandGroup("larp", "The LARP point board")
+    larp_group = SlashCommandGroup("larp", "The Larp Jar")
 
     # ---------- db helpers ----------
+
+    async def _is_enabled(self, guild_id: int) -> bool:
+        cached = self._enabled_cache.get(guild_id)
+        if cached is not None:
+            return cached
+
+        async with self.bot.tag_db.execute(
+            "SELECT enabled FROM larp_settings WHERE guild = ?", (guild_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+
+        enabled = True if row is None else bool(row[0])
+        self._enabled_cache[guild_id] = enabled
+        return enabled
 
     async def _add_point(self, guild_id: int, user_id: int):
         await self.bot.tag_db.execute(
@@ -92,6 +107,22 @@ class LarpBoard(commands.Cog):
         ) as cursor:
             row = await cursor.fetchone()
         return row[0] if row else 0
+
+    async def _get_rank(self, guild_id: int, points: int):
+        async with self.bot.tag_db.execute(
+            "SELECT COUNT(*) FROM larp_scores WHERE guild = ? AND points > 0", (guild_id,)
+        ) as cursor:
+            total = (await cursor.fetchone())[0]
+
+        if points <= 0:
+            return None, total
+
+        async with self.bot.tag_db.execute(
+            "SELECT COUNT(*) FROM larp_scores WHERE guild = ? AND points > ?", (guild_id, points)
+        ) as cursor:
+            ahead = (await cursor.fetchone())[0]
+
+        return ahead + 1, total
 
     async def _get_state(self, guild_id: int, user_id: int):
         async with self.bot.tag_db.execute(
@@ -157,11 +188,48 @@ class LarpBoard(commands.Cog):
         except discord.HTTPException:
             pass
 
+    # ---------- shared stats embed (used by /larp stats and .larp stats :thumbsup:) ----------
+
+    async def _build_stats_embed(self, guild: discord.Guild, target: discord.Member) -> discord.Embed:
+        points = await self._get_points(guild.id, target.id)
+        rank, total = await self._get_rank(guild.id, points)
+        until_str, _, _, _ = await self._get_state(guild.id, target.id)
+
+        until = discord.utils.parse_time(until_str) if until_str else None
+        restricted = until is not None and until > utcnow()
+
+        embed = discord.Embed(
+            title=f"🎭 LARP Stats — {target.display_name}",
+            color=discord.Color.red() if restricted else discord.Color.purple()
+        )
+        embed.set_thumbnail(url=target.display_avatar.url)
+        embed.add_field(name="Times LARPED", value=f"**{points}**", inline=True)
+        embed.add_field(
+            name="Rank",
+            value=f"**#{rank}** of {total}" if rank else "*Unranked*",
+            inline=True
+        )
+        embed.add_field(
+            name="Restricted?",
+            value=(f"🚫 Yes, until {discord.utils.format_dt(until, style='R')}" if restricted
+                   else "✅ No"),
+            inline=False
+        )
+        return embed
+
     # ---------- listener ----------
 
     @commands.Cog.listener()
     async def on_message(self, message):
         if message.author.bot or not message.guild or not message.content:
+            return
+
+        if not await self._is_enabled(message.guild.id):
+            return
+
+        # Don't count reel commands (e.g. `.larp stats`).
+        ctx = await self.bot.get_context(message)
+        if ctx.valid:
             return
 
         guild_id = message.guild.id
@@ -216,7 +284,7 @@ class LarpBoard(commands.Cog):
             await self._update_streak(guild_id, user_id, new_streak, now.isoformat())
 
             points = await self._get_points(guild_id, user_id)
-            default = f"🎭 {message.author.mention} **LARPED**! They have larped **{points}** times now!"
+            default = f"🪙 {message.author.mention} **LARPED**! They have larped **{points}** times now!"
             text = _pick_message(
                 SAY_MESSAGES_FILE, default,
                 mention=message.author.mention, points=points
@@ -226,7 +294,21 @@ class LarpBoard(commands.Cog):
             except discord.HTTPException:
                 pass
 
-    # ---------- commands ----------
+    # ---------- prefix commands ----------
+
+    @commands.group(name="larp", invoke_without_command=True)
+    @commands.guild_only()
+    async def larp_prefix(self, ctx):
+        await ctx.send("Usage: `.larp stats [@user]`")
+
+    @larp_prefix.command(name="stats")
+    @commands.guild_only()
+    async def larp_stats_prefix(self, ctx, member: discord.Member = None):
+        target = member or ctx.author
+        embed = await self._build_stats_embed(ctx.guild, target)
+        await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+    # ---------- slash commands ----------
 
     @larp_group.command(name="leaderboard", description="See who larped the most")
     async def larp_leaderboard(self, ctx):
@@ -253,17 +335,38 @@ class LarpBoard(commands.Cog):
         )
         await ctx.respond(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
-    @larp_group.command(name="score", description="Check how many times someone has LARPED")
-    async def larp_score(
+    @larp_group.command(name="stats", description="See someone's LARP stats")
+    async def larp_stats(
         self, ctx,
         member: Option(discord.Member, "Member to check (defaults to yourself)", required=False, default=None),
     ):
         target = member or ctx.author
-        points = await self._get_points(ctx.guild.id, target.id)
-        who = "You have" if target == ctx.author else f"{target.display_name} has"
-        await ctx.respond(f"🎭 {who} **LARPED** {points} time(s).", allowed_mentions=discord.AllowedMentions.none())
+        embed = await self._build_stats_embed(ctx.guild, target)
+        await ctx.respond(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
-    @larp_group.command(name="reset", description="Wipe a member's LARP points and offense history (staff only)")
+    @larp_group.command(name="toggle", description="Turn the LARP board on or off")
+    @is_staff()
+    async def larp_toggle(
+        self, ctx,
+        enabled: Option(bool, "True to enable LARP tracking, False to disable it"),
+    ):
+        await self.bot.tag_db.execute(
+            "INSERT INTO larp_settings (guild, enabled) VALUES (?, ?) "
+            "ON CONFLICT(guild) DO UPDATE SET enabled = excluded.enabled",
+            (ctx.guild.id, int(enabled))
+        )
+        await self.bot.tag_db.commit()
+        self._enabled_cache.pop(ctx.guild.id, None)
+
+        if enabled:
+            await ctx.respond("✅ The LARP board is now **enabled**.")
+        else:
+            await ctx.respond(
+                "🔕 The LARP board is now **disabled**. Nothing will be counted or deleted. "
+                "Scores and the leaderboard are kept."
+            )
+
+    @larp_group.command(name="reset", description="Wipe a member's LARP points and offense history")
     @is_staff()
     async def larp_reset(
         self, ctx,
@@ -282,7 +385,7 @@ class LarpBoard(commands.Cog):
             allowed_mentions=discord.AllowedMentions.none()
         )
 
-    @larp_group.command(name="unmute", description="Manually clear an active LARP restriction (staff only)")
+    @larp_group.command(name="unmute", description="Manually clear an active LARP restriction")
     @is_staff()
     async def larp_unmute(
         self, ctx,

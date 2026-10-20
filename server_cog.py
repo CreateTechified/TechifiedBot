@@ -1,3 +1,5 @@
+import io
+
 import discord
 from discord.ext import commands
 from discord.commands import SlashCommandGroup, Option
@@ -117,7 +119,7 @@ class ServerManagement(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    whitelist_group = SlashCommandGroup("whitelist", "Manage the network-wide whitelist (staff only)")
+    whitelist_group = SlashCommandGroup("whitelist", "Manage the network-wide whitelist")
     server_group = SlashCommandGroup("server", "Manage the Minecraft server(s) tracked in this Discord server")
 
     @staticmethod
@@ -152,7 +154,7 @@ class ServerManagement(commands.Cog):
 
     # ---------- /server (config) ----------
 
-    @server_group.command(name="add", description="Track a new Minecraft server (staff only)")
+    @server_group.command(name="add", description="Track a new Minecraft server")
     @is_staff()
     async def server_add(
         self, ctx,
@@ -174,7 +176,7 @@ class ServerManagement(commands.Cog):
 
         await ctx.send_modal(AddServerModal(self, name, hide_ip))
 
-    @server_group.command(name="remove", description="Stop tracking a Minecraft server (staff only)")
+    @server_group.command(name="remove", description="Stop tracking a Minecraft server")
     @is_staff()
     async def server_remove(
         self, ctx,
@@ -195,7 +197,7 @@ class ServerManagement(commands.Cog):
 
         await ctx.respond(f"✅ Stopped tracking `{name}`.")
 
-    @server_group.command(name="update", description="Update a tracked server's address, port and/or visibility (staff only)")
+    @server_group.command(name="update", description="Update a tracked server's address, port and/or visibility")
     @is_staff()
     async def server_update(
         self, ctx,
@@ -250,6 +252,22 @@ class ServerManagement(commands.Cog):
     async def server_list(self, ctx):
         await self._send_server_list(ctx)
 
+    @server_group.command(name="listlog", description="Get every tracked server as a downloadable .txt file")
+    @is_staff()
+    async def server_listlog(self, ctx):
+        servers = await self._list_servers(ctx.guild.id)
+
+        if not servers:
+            await ctx.respond("No servers are tracked here yet. Use `/server add` to add one!")
+            return
+
+        content = "\n".join(
+            f"{name} — " + ("address hidden" if hide_ip else f"{host}:{port}")
+            for name, host, port, hide_ip in servers
+        )
+        file = discord.File(fp=io.BytesIO(content.encode("utf-8")), filename="servers.txt")
+        await ctx.respond(f"🖥️ {len(servers)} server(s) in {ctx.guild.name}:", file=file)
+
     @commands.command(name="servers")
     @commands.guild_only()
     async def servers_prefix(self, ctx):
@@ -260,7 +278,7 @@ class ServerManagement(commands.Cog):
     async def _resolve_single_server(self, guild_id: int, name):
         servers = await self._list_servers(guild_id)
         if not servers:
-            return None, "❌ No servers are tracked here yet. An admin can add one with `/server add`."
+            return None, "❌ No servers are tracked here yet. Use `/server add` to add one!"
 
         if name:
             name = name.strip().lower()
@@ -373,6 +391,28 @@ class ServerManagement(commands.Cog):
             [f"`{name}`" for name in sorted(names)],
             discord.Color.blurple(), noun="player(s)"
         )
+
+    @whitelist_group.command(name="listlog", description="Get every whitelisted player as a downloadable .txt file")
+    @is_staff()
+    async def whitelist_listlog(self, ctx):
+        if not get_api_key():
+            await ctx.respond(NO_KEY_MESSAGE, ephemeral=True)
+            return
+
+        await ctx.defer()
+
+        names = await ws_whitelist_names()
+        if names is None:
+            await ctx.respond("❌ WhitelistSync API error while reading the whitelist.")
+            return
+
+        if not names:
+            await ctx.respond("*No players whitelisted.*")
+            return
+
+        content = "\n".join(sorted(names))
+        file = discord.File(fp=io.BytesIO(content.encode("utf-8")), filename="whitelist.txt")
+        await ctx.respond(f"📑 {len(names)} whitelisted player(s):", file=file)
 
     @whitelist_group.command(name="add", description="Add a player to the whitelist")
     @is_staff()

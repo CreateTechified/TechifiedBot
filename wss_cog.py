@@ -17,7 +17,7 @@ class AutoReply(commands.Cog):
         self._cache = {}
         self.cooldowns = commands.CooldownMapping.from_cooldown(1, 15.0, commands.BucketType.guild)
 
-    wss_group = SlashCommandGroup("wss", "Automatic reply triggers (admin only)")
+    wss_group = SlashCommandGroup("wss", "Automatic reply triggers")
 
     async def _get_replies(self, guild_id: int):
         cached = self._cache.get(guild_id)

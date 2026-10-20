@@ -247,6 +247,13 @@ async def setup_database(bot):
             pass
 
     await bot.tag_db.execute(
+        """CREATE TABLE IF NOT EXISTS larp_settings (
+            guild INTEGER PRIMARY KEY,
+            enabled INTEGER NOT NULL DEFAULT 1
+        )"""
+    )
+
+    await bot.tag_db.execute(
         """CREATE TABLE IF NOT EXISTS afk_status (
             guild INTEGER NOT NULL,
             user_id INTEGER NOT NULL,
@@ -276,6 +283,25 @@ async def setup_database(bot):
             auto_close INTEGER NOT NULL DEFAULT 1,
             reminded INTEGER NOT NULL DEFAULT 0,
             delete_at TEXT
+        )"""
+    )
+
+    await bot.tag_db.execute(
+        """CREATE TABLE IF NOT EXISTS scheduled_wipes (
+            guild INTEGER PRIMARY KEY,
+            run_at TEXT NOT NULL,
+            scheduled_by INTEGER NOT NULL,
+            created_at TEXT NOT NULL
+        )"""
+    )
+
+    await bot.tag_db.execute(
+        """CREATE TABLE IF NOT EXISTS particles (
+            guild INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            particle TEXT NOT NULL,
+            amount INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (guild, user_id, particle)
         )"""
     )
 
@@ -318,6 +344,7 @@ async def main():
         bot.load_extension('afk_cog')
         bot.load_extension('application_cog')
         bot.load_extension('tickets_cog')
+        bot.load_extension('wipe_cog')
 
         await register_tag_command_aliases(bot)
 
