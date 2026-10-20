@@ -7,7 +7,7 @@ import discord
 from discord.ext import commands, tasks
 from discord.commands import Option, SlashCommandGroup
 
-from slash_cog import is_admin, ADMIN_LOG_CHANNEL_ID
+from slash_cog import ADMIN_LOG_CHANNEL_ID
 
 # Idk if this is a good idea or not..
 
@@ -15,20 +15,26 @@ WIPEALL_USER_IDS = {872693345510637589, 1023288254671376424}
 
 TAG_FILES_DIR = "tag_files"
 FINAL_CONFIRM_TIMEOUT = 30
-WIPEALL_DELAY_HOURS = 12
-WIPEALL_DELAY = timedelta(hours=WIPEALL_DELAY_HOURS)
+
+WIPE_DELAY_HOURS = 24
+WIPE_DELAY = timedelta(hours=WIPE_DELAY_HOURS)
+REMIND_HALF = WIPE_DELAY / 2
+REMIND_FINAL = timedelta(hours=1)
+
+ALL_KEY = "all"
 
 # NOT included: tickets, help threads and AFK.
 SECTORS = {
-    "larp": "LARP stats and restrictions",
+    "larp": "Larp stats and restrictions",
     "tags": "Tags, aliases and attachment files",
-    "wss": "Auto-reply triggers",
+    "wss": "Auto-reply triggers (WSS)",
     "warnings": "Member warnings",
     "applications": "Whitelist application records",
     "servers": "Tracked Minecraft servers (incl. API keys)",
 }
 
 SECTOR_CHOICES = [discord.OptionChoice(desc, key) for key, desc in SECTORS.items()]
+TARGET_CHOICES = [discord.OptionChoice("Everything (/wipe all)", ALL_KEY)] + SECTOR_CHOICES
 
 
 def bullet_list(lines):
@@ -39,6 +45,20 @@ def fmt_time(dt) -> str:
     if dt is None:
         return "an unknown time"
     return f"{discord.utils.format_dt(dt, style='F')} ({discord.utils.format_dt(dt, style='R')})"
+
+
+def is_wipe_user():
+    async def predicate(ctx: discord.ApplicationContext) -> bool:
+        if ctx.author.id in WIPEALL_USER_IDS:
+            return True
+        await ctx.respond("❌ You don't have permission to use /wipe commands.", ephemeral=True)
+        return False
+
+    return commands.check(predicate)
+
+
+def sector_label(sector: str) -> str:
+    return "Everything" if sector == ALL_KEY else SECTORS.get(sector, sector)
 
 
 # ---------- confirmation ----------
@@ -62,7 +82,7 @@ class PhraseModal(discord.ui.Modal):
         if (self.phrase_input.value or "").strip() != self.phrase:
             await interaction.response.send_message(
                 f"❌ That didn't match `{self.phrase}`. "
-                "Nothing was wiped.",
+                "Nothing was scheduled.",
                 ephemeral=True
             )
             return
@@ -154,12 +174,12 @@ class Wipe(commands.Cog):
             if cog is not None:
                 cog._cache.pop(guild_id, None)
 
-    async def run_wipe(self, sectors, guild_id: int, claim_schedule: bool = False):
+    async def run_wipe(self, sectors, guild_id: int, claim_job_id: int = None):
         db = self.bot.tag_db
         lines = []
         try:
-            if claim_schedule:
-                cursor = await db.execute("DELETE FROM scheduled_wipes WHERE guild = ?", (guild_id,))
+            if claim_job_id is not None:
+                cursor = await db.execute("DELETE FROM wipe_jobs WHERE id = ?", (claim_job_id,))
                 claimed = cursor.rowcount
                 await cursor.close()
                 if not claimed:
@@ -196,128 +216,258 @@ class Wipe(commands.Cog):
         except discord.HTTPException:
             pass
 
-    # ---------- scheduled full wipe: db helpers ----------
+    # ---------- scheduled wipes: db helpers ----------
 
-    async def _get_schedule(self, guild_id: int):
+    async def _list_jobs(self, guild_id: int):
         async with self.bot.tag_db.execute(
-            "SELECT run_at, scheduled_by FROM scheduled_wipes WHERE guild = ?", (guild_id,)
+            "SELECT sector, run_at, scheduled_by FROM wipe_jobs WHERE guild = ? ORDER BY run_at",
+            (guild_id,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [(sector, discord.utils.parse_time(run_at), by) for sector, run_at, by in rows]
+
+    async def _get_job(self, guild_id: int, sector: str):
+        async with self.bot.tag_db.execute(
+            "SELECT run_at, scheduled_by FROM wipe_jobs WHERE guild = ? AND sector = ?",
+            (guild_id, sector)
         ) as cursor:
             row = await cursor.fetchone()
         if row is None:
             return None
         return discord.utils.parse_time(row[0]), row[1]
 
-    async def _schedule(self, guild_id: int, user_id: int):
+    async def _schedule(self, guild_id: int, sector: str, user_id: int):
         now = discord.utils.utcnow()
-        run_at = now + WIPEALL_DELAY
+        run_at = now + WIPE_DELAY
         cursor = await self.bot.tag_db.execute(
-            "INSERT OR IGNORE INTO scheduled_wipes (guild, run_at, scheduled_by, created_at) "
-            "VALUES (?, ?, ?, ?)",
-            (guild_id, run_at.isoformat(), user_id, now.isoformat())
+            "INSERT OR IGNORE INTO wipe_jobs (guild, sector, run_at, scheduled_by, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (guild_id, sector, run_at.isoformat(), user_id, now.isoformat())
         )
         await self.bot.tag_db.commit()
         inserted = cursor.rowcount
         await cursor.close()
         return run_at if inserted else None
 
-    # ---------- scheduled full wipe: the timer ----------
+    # ---------- scheduled wipes: the timer ----------
 
     @tasks.loop(minutes=1)
     async def check_scheduled(self):
         async with self.bot.tag_db.execute(
-            "SELECT guild, run_at, scheduled_by FROM scheduled_wipes"
+            "SELECT id, guild, sector, run_at, scheduled_by, reminded_12, reminded_1 FROM wipe_jobs"
         ) as cursor:
             rows = await cursor.fetchall()
 
         now = discord.utils.utcnow()
-        for guild_id, run_at, scheduled_by in rows:
+        for job_id, guild_id, sector, run_at, scheduled_by, reminded_half, reminded_final in rows:
             due = discord.utils.parse_time(run_at)
-            if due is None or due > now:
+            if due is None:
                 continue
+            remaining = due - now
             try:
-                await self._execute_scheduled(guild_id, scheduled_by)
+                if remaining <= timedelta(0):
+                    await self._execute_job(job_id, guild_id, sector, scheduled_by)
+                elif remaining <= REMIND_FINAL and not reminded_final:
+                    await self._remind(job_id, sector, due, scheduled_by, final=True)
+                elif remaining <= REMIND_HALF and not reminded_half:
+                    await self._remind(job_id, sector, due, scheduled_by, final=False)
             except Exception as e:
-                print(f"Scheduled wipe error (guild {guild_id}): {e}")
+                print(f"Scheduled wipe error (guild {guild_id}, {sector}): {e}")
 
     @check_scheduled.before_loop
     async def before_check_scheduled(self):
         await self.bot.wait_until_ready()
 
-    async def _execute_scheduled(self, guild_id: int, scheduled_by: int):
-        lines = await self.run_wipe(list(SECTORS), guild_id, claim_schedule=True)
+    async def _execute_job(self, job_id: int, guild_id: int, sector: str, scheduled_by: int):
+        sectors = list(SECTORS) if sector == ALL_KEY else [sector]
+        lines = await self.run_wipe(sectors, guild_id, claim_job_id=job_id)
         if lines is None:
             return  # cancelled just before it ran
 
         await self._log(
-            self.bot.get_guild(guild_id), "💥 Scheduled wipe executed: ALL", lines, scheduled_by
+            self.bot.get_guild(guild_id), f"💥 Scheduled wipe executed: {sector.upper()}",
+            lines, scheduled_by
         )
+
+    async def _remind(self, job_id: int, sector: str, due, scheduled_by: int, final: bool):
+        await self.bot.tag_db.execute(
+            "UPDATE wipe_jobs SET reminded_12 = 1, reminded_1 = ? WHERE id = ?", (int(final), job_id)
+        )
+        await self.bot.tag_db.commit()
+
+        channel = self.bot.get_channel(ADMIN_LOG_CHANNEL_ID)
+        if channel is None:
+            return
+
+        label = sector_label(sector)
+        if final:
+            title = f"🚨 Wipe in under 1 hour: {label}"
+            color = discord.Color.red()
+        else:
+            hours = int(REMIND_HALF.total_seconds() // 3600)
+            title = f"⏰ Wipe in {hours} hours: {label}"
+            color = discord.Color.orange()
+
+        embed = discord.Embed(
+            title=title,
+            description=f"This wipe runs {fmt_time(due)}.\nUse `/wipe cancel` to stop it.",
+            color=color,
+            timestamp=discord.utils.utcnow()
+        )
+        try:
+            await channel.send(
+                f"<@{scheduled_by}>", embed=embed,
+                allowed_mentions=discord.AllowedMentions(users=True)
+            )
+        except discord.HTTPException:
+            pass
 
     # ---------- /wipe data <sector> ----------
 
-    async def _confirmed_sector(self, interaction: discord.Interaction, sector: str):
-        await interaction.response.defer(ephemeral=True)
-        try:
-            lines = await self.run_wipe([sector], interaction.guild_id)
-        except Exception as e:
-            print(f"Wipe error ({sector}): {e}")
-            await interaction.followup.send(
-                "❌ Something went wrong while wiping, so nothing was changed.", ephemeral=True
-            )
-            return
-
-        await interaction.followup.send(f"🧹 **Wipe complete.**\n{bullet_list(lines)}", ephemeral=True)
-        await self._log(interaction.guild, f"🧹 Wiped: {sector}", lines, interaction.user.id)
-
-    @wipe_group.command(name="data", description="Permanently wipe one category of bot data")
-    @is_admin()
+    @wipe_group.command(
+        name="data", description=f"Schedule a wipe of one category of bot data, {WIPE_DELAY_HOURS} hours from now"
+    )
+    @is_wipe_user()
     async def wipe_data(
         self, ctx,
         sector: Option(str, "What to wipe", choices=SECTOR_CHOICES),
     ):
+        existing = await self._get_job(ctx.guild.id, sector)
+        if existing is not None:
+            await ctx.respond(
+                f"⚠️ A wipe of **{SECTORS[sector]}** is already scheduled to run {fmt_time(existing[0])}. "
+                "Use `/wipe cancel` to stop it.",
+                ephemeral=True
+            )
+            return
+
         phrase = f"WIPE {sector.upper()}"
 
         async def on_confirm(interaction: discord.Interaction):
-            await self._confirmed_sector(interaction, sector)
+            await self._schedule_sector(interaction, sector)
 
         await ctx.send_modal(PhraseModal(f"Confirm: {phrase}", phrase, on_confirm))
 
+    async def _schedule_sector(self, interaction: discord.Interaction, sector: str):
+        if interaction.user.id not in WIPEALL_USER_IDS:
+            await interaction.response.send_message("❌ You don't have permission to do that.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        try:
+            run_at = await self._schedule(interaction.guild_id, sector, interaction.user.id)
+        except Exception as e:
+            print(f"Schedule error ({sector}): {e}")
+            await interaction.followup.send(
+                "❌ Something went wrong, so nothing was scheduled.", ephemeral=True
+            )
+            return
+
+        if run_at is None:
+            job = await self._get_job(interaction.guild_id, sector)
+            when = fmt_time(job[0]) if job else "soon"
+            await interaction.followup.send(
+                f"⚠️ A wipe of **{SECTORS[sector]}** is already scheduled to run {when}. "
+                "Use `/wipe cancel` to stop it.",
+                ephemeral=True
+            )
+            return
+
+        await interaction.followup.send(
+            f"⏳ **Wipe scheduled:** {SECTORS[sector]}, to run {fmt_time(run_at)}.\n"
+            "Use `/wipe cancel` any time before then to stop it.",
+            ephemeral=True
+        )
+        await self._log(
+            interaction.guild, f"⏳ Wipe scheduled: {sector}",
+            [f"Wipes: {SECTORS[sector]}",
+             f"Runs {fmt_time(run_at)}",
+             "Stop it with `/wipe cancel`"],
+            interaction.user.id, color=discord.Color.orange()
+        )
+
+    # ---------- /wipe queue ----------
+
+    @wipe_group.command(name="queue", description="Show all scheduled wipes")
+    @is_wipe_user()
+    async def wipe_queue(self, ctx):
+        jobs = await self._list_jobs(ctx.guild.id)
+        if not jobs:
+            await ctx.respond("✅ No wipes are scheduled.", ephemeral=True)
+            return
+
+        embed = discord.Embed(
+            title="⏳ Scheduled wipes", color=discord.Color.orange(), timestamp=discord.utils.utcnow()
+        )
+        for sector, run_at, scheduled_by in jobs:
+            embed.add_field(
+                name=sector_label(sector),
+                value=f"Runs {fmt_time(run_at)}\nScheduled by <@{scheduled_by}>",
+                inline=False
+            )
+        embed.set_footer(text=f"{len(jobs)} wipe(s) • use /wipe cancel to stop one")
+        await ctx.respond(embed=embed, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
     # ---------- /wipe cancel ----------
 
-    @wipe_group.command(name="cancel", description="Cancel the scheduled full wipe")
-    @is_admin()
-    async def wipe_cancel(self, ctx):
-        schedule = await self._get_schedule(ctx.guild.id)
-        if schedule is None:
+    @wipe_group.command(name="cancel", description="Cancel a scheduled wipe")
+    @is_wipe_user()
+    async def wipe_cancel(
+        self, ctx,
+        target: Option(
+            str, "Which scheduled wipe to cancel (optional if only one is pending)",
+            choices=TARGET_CHOICES, required=False, default=None
+        ),
+    ):
+        jobs = await self._list_jobs(ctx.guild.id)
+        if not jobs:
             await ctx.respond("❌ There's no wipe scheduled.", ephemeral=True)
             return
 
-        run_at, scheduled_by = schedule
-        await self.bot.tag_db.execute("DELETE FROM scheduled_wipes WHERE guild = ?", (ctx.guild.id,))
+        if target is None:
+            if len(jobs) > 1:
+                pending = bullet_list(
+                    f"**{sector_label(s)}**, runs {fmt_time(r)}" for s, r, _ in jobs
+                )
+                await ctx.respond(
+                    f"⚠️ Several wipes are scheduled. Pick one with the `target` option:\n{pending}",
+                    ephemeral=True
+                )
+                return
+            target = jobs[0][0]
+
+        job = next((j for j in jobs if j[0] == target), None)
+        if job is None:
+            await ctx.respond(f"❌ No wipe of **{sector_label(target)}** is scheduled.", ephemeral=True)
+            return
+
+        _, run_at, scheduled_by = job
+        await self.bot.tag_db.execute(
+            "DELETE FROM wipe_jobs WHERE guild = ? AND sector = ?", (ctx.guild.id, target)
+        )
         await self.bot.tag_db.commit()
 
-        await ctx.respond("✅ The scheduled wipe was cancelled. Nothing was wiped.", ephemeral=True)
+        await ctx.respond(
+            f"✅ The scheduled wipe of **{sector_label(target)}** was cancelled. Nothing was wiped.",
+            ephemeral=True
+        )
         await self._log(
-            ctx.guild, "🛑 Scheduled wipe cancelled",
+            ctx.guild, f"🛑 Scheduled wipe cancelled: {target}",
             [f"It was scheduled by <@{scheduled_by}> to run {fmt_time(run_at)}."],
             ctx.author.id, color=discord.Color.green()
         )
 
-    # ---------- /wipe all (scheduled) ----------
+    # ---------- /wipe all ----------
 
     @wipe_group.command(
-        name="all", description=f"Schedule a wipe of ALL bot data, {WIPEALL_DELAY_HOURS} hours from now"
+        name="all", description=f"Schedule a wipe of ALL bot data, {WIPE_DELAY_HOURS} hours from now"
     )
-    @is_admin()
+    @is_wipe_user()
     async def wipe_all(self, ctx):
-        if ctx.author.id not in WIPEALL_USER_IDS:
-            await ctx.respond("❌ You don't have permission to schedule a full wipe.", ephemeral=True)
-            return
-
-        schedule = await self._get_schedule(ctx.guild.id)
-        if schedule is not None:
-            run_at, _ = schedule
+        existing = await self._get_job(ctx.guild.id, ALL_KEY)
+        if existing is not None:
             await ctx.respond(
-                f"⚠️ A full wipe is already scheduled to run {fmt_time(run_at)}. "
+                f"⚠️ A full wipe is already scheduled to run {fmt_time(existing[0])}. "
                 "Use `/wipe cancel` to stop it.",
                 ephemeral=True
             )
@@ -333,9 +483,10 @@ class Wipe(commands.Cog):
         view = WipeAllFinalView(self, interaction.user.id)
         await interaction.response.send_message(
             f"⚠️ **Final confirmation.** This will schedule a wipe of **everything** for this server, "
-            f"to run in **{WIPEALL_DELAY_HOURS} hours**:\n"
+            f"to run in **{WIPE_DELAY_HOURS} hours**:\n"
             + bullet_list(SECTORS.values())
-            + "\n\nYou can stop it any time before then with `/wipe cancel`. "
+            + "\n\nYou'll get reminders with 12 hours and 1 hour left, and can stop it any time "
+              "before then with `/wipe cancel`. "
               f"Press the button within {FINAL_CONFIRM_TIMEOUT} seconds, or nothing will be scheduled.",
             view=view, ephemeral=True
         )
@@ -343,7 +494,7 @@ class Wipe(commands.Cog):
 
     async def _schedule_wipeall(self, interaction: discord.Interaction):
         try:
-            run_at = await self._schedule(interaction.guild_id, interaction.user.id)
+            run_at = await self._schedule(interaction.guild_id, ALL_KEY, interaction.user.id)
         except Exception as e:
             print(f"Schedule error (all): {e}")
             await interaction.edit_original_response(
@@ -352,8 +503,8 @@ class Wipe(commands.Cog):
             return
 
         if run_at is None:
-            schedule = await self._get_schedule(interaction.guild_id)
-            when = fmt_time(schedule[0]) if schedule else "soon"
+            job = await self._get_job(interaction.guild_id, ALL_KEY)
+            when = fmt_time(job[0]) if job else "soon"
             await interaction.edit_original_response(
                 content=f"⚠️ A full wipe is already scheduled to run {when}. Use `/wipe cancel` to stop it.",
                 view=None
