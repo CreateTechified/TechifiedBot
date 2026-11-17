@@ -5,6 +5,7 @@ from discord.ext import commands
 from discord.commands import SlashCommandGroup, Option
 
 from page_embeds import send_paged
+from log_utils import log_admin_action
 from mc_utils import (
     get_api_key, lookup_profile,
     whitelist_add as ws_whitelist_add,
@@ -113,6 +114,15 @@ class AddServerModal(discord.ui.Modal):
         await interaction.response.send_message(
             f"✅ Now tracking `{self.server_name}` ({shown}). Check it with `.mcstatus {self.server_name}`."
         )
+        await log_admin_action(
+            self.cog.bot, "🖥️ Minecraft Server Added", discord.Color.green(), interaction.user,
+            fields={
+                "Name": f"`{self.server_name}`",
+                "Address": f"`{host}:{port}`",
+                "Hidden publicly": "Yes" if self.hide_ip else "No",
+            },
+            channel=interaction.channel
+        )
 
 
 class ServerManagement(commands.Cog):
@@ -196,6 +206,10 @@ class ServerManagement(commands.Cog):
             return
 
         await ctx.respond(f"✅ Stopped tracking `{name}`.")
+        await log_admin_action(
+            self.bot, "🖥️ Minecraft Server Removed", discord.Color.red(), ctx.author,
+            fields={"Name": f"`{name}`"}, channel=ctx.channel
+        )
 
     @server_group.command(name="update", description="Update a tracked server's address, port and/or visibility")
     @is_staff()
@@ -231,6 +245,15 @@ class ServerManagement(commands.Cog):
 
         shown = "address hidden" if new_hide_ip else f"`{new_host}:{new_port}`"
         await ctx.respond(f"✅ Updated `{name}` ({shown}).")
+        await log_admin_action(
+            self.bot, "🖥️ Minecraft Server Updated", discord.Color.orange(), ctx.author,
+            fields={
+                "Name": f"`{name}`",
+                "Address": f"`{old_host}:{old_port}` → `{new_host}:{new_port}`",
+                "Hidden publicly": f"{'Yes' if old_hide_ip else 'No'} → {'Yes' if new_hide_ip else 'No'}",
+            },
+            channel=ctx.channel
+        )
 
     async def _send_server_list(self, ctx):
         servers = await self._list_servers(ctx.guild.id)
@@ -441,6 +464,10 @@ class ServerManagement(commands.Cog):
             return
 
         await ctx.respond(f"✅ Whitelisted `{canonical}`.")
+        await log_admin_action(
+            self.bot, "📋 Player Whitelisted", discord.Color.green(), ctx.author,
+            fields={"Player": f"`{canonical}`", "UUID": f"`{player_uuid}`"}, channel=ctx.channel
+        )
 
     @whitelist_group.command(name="remove", description="Remove a player from the whitelist")
     @is_staff()
@@ -469,6 +496,10 @@ class ServerManagement(commands.Cog):
             return
 
         await ctx.respond(f"✅ Unwhitelisted `{canonical}`.")
+        await log_admin_action(
+            self.bot, "📋 Player Unwhitelisted", discord.Color.red(), ctx.author,
+            fields={"Player": f"`{canonical}`", "UUID": f"`{player_uuid}`"}, channel=ctx.channel
+        )
 
     @whitelist_group.command(name="check", description="Check whether a player is whitelisted")
     @is_staff()

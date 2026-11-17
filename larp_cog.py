@@ -7,6 +7,8 @@ from discord.ext import commands
 from discord.commands import SlashCommandGroup, Option
 from discord.utils import utcnow
 
+from log_utils import log_admin_action, log_bot_event, mark_quiet
+
 ADMIN_ROLE_ID = 1222456633511378965
 MODERATOR_ROLE_ID = 1421877616272605326
 OWNER_ROLE_ID = 1286650794053210122
@@ -188,6 +190,12 @@ class LarpBoard(commands.Cog):
         except discord.HTTPException:
             pass
 
+        await log_bot_event(
+            self.bot, "🪙 LARP restriction applied", discord.Color.orange(),
+            f"{message.author.mention} (`{message.author.id}`) in {message.channel.mention}",
+            fields={"Offense": f"#{offense_count}", "Duration": format_duration(minutes)}
+        )
+
     # ---------- shared stats embed (used by /larp stats and .larp stats :thumbsup:) ----------
 
     async def _build_stats_embed(self, guild: discord.Guild, target: discord.Member) -> discord.Embed:
@@ -242,6 +250,7 @@ class LarpBoard(commands.Cog):
         if until is not None:
             if until > utcnow():
                 if contains_larp:
+                    mark_quiet(message.id)
                     try:
                         await message.delete()
                     except discord.HTTPException:
@@ -366,6 +375,11 @@ class LarpBoard(commands.Cog):
                 "Scores and the leaderboard are kept."
             )
 
+        await log_admin_action(
+            self.bot, "🪙 LARP Board Enabled" if enabled else "🪙 LARP Board Disabled",
+            discord.Color.green() if enabled else discord.Color.red(), ctx.author, channel=ctx.channel
+        )
+
     @larp_group.command(name="reset", description="Wipe a member's LARP points and offense history")
     @is_staff()
     async def larp_reset(
@@ -384,6 +398,10 @@ class LarpBoard(commands.Cog):
             f"✅ Reset LARP points, restriction, and offense history for {member.mention}.",
             allowed_mentions=discord.AllowedMentions.none()
         )
+        await log_admin_action(
+            self.bot, "🪙 LARP Data Reset", discord.Color.orange(), ctx.author,
+            target=member, channel=ctx.channel
+        )
 
     @larp_group.command(name="unmute", description="Manually clear an active LARP restriction")
     @is_staff()
@@ -396,6 +414,10 @@ class LarpBoard(commands.Cog):
         await ctx.respond(
             f"✅ Cleared {member.mention}'s LARP restriction.",
             allowed_mentions=discord.AllowedMentions.none()
+        )
+        await log_admin_action(
+            self.bot, "🪙 LARP Restriction Cleared", discord.Color.green(), ctx.author,
+            target=member, channel=ctx.channel
         )
 
 

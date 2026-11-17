@@ -9,15 +9,15 @@ from datetime import timedelta
 import json
 import os
 
-from tag_cog import TagReportView, VALID_NAME_CHARS
+from tag_cog import TagReportView, VALID_NAME_CHARS, fetch_tag_listing, listall_lines, listlog_text
 from page_embeds import send_paged
+from log_utils import ADMIN_LOG_CHANNEL_ID, BOT_LOG_CHANNEL_ID
 
 TAG_FILES_DIR = "tag_files"
-TAG_REPORT_CHANNEL_ID = 1542180741092347954
+TAG_REPORT_CHANNEL_ID = BOT_LOG_CHANNEL_ID
 TAG_DELETE_NOTIFY_CHANNEL_ID = 1436518560964022363
 REPORTED_WARNING = "⚠️ **This Tag has been reported for potential rule violations**"
 
-ADMIN_LOG_CHANNEL_ID = 1472650884906221771
 
 ADMIN_ROLE_ID = 1222456633511378965
 MODERATOR_ROLE_ID = 1421877616272605326
@@ -392,40 +392,34 @@ class SlashCommands(commands.Cog):
     @tag_group.command(name="listall", description="List every tag in the server")
     @is_staff()
     async def tag_listall(self, ctx):
-        async with self.bot.tag_db.execute(
-            "SELECT name FROM tags WHERE guild = ? ORDER BY name", (ctx.guild.id,)
-        ) as cursor:
-            rows = await cursor.fetchall()
+        entries = await fetch_tag_listing(self.bot.tag_db, ctx.guild.id)
 
-        if not rows:
+        if not entries:
             await ctx.respond("No tags exist in this server yet.")
             return
 
         await send_paged(
             ctx, f"📑 All tags in {ctx.guild.name}",
-            [f"`{row[0]}`" for row in rows],
+            listall_lines(entries),
             discord.Color.blurple(), noun="tag(s)"
         )
 
-    @tag_group.command(name="listlog", description="Get every tag name in the server as a downloadable .txt file")
+    @tag_group.command(name="listlog", description="Get every tag with its creator, aliases and content as a downloadable .txt file")
     @is_staff()
     async def tag_listlog(self, ctx):
         await ctx.defer()
 
-        async with self.bot.tag_db.execute(
-            "SELECT name FROM tags WHERE guild = ? ORDER BY name", (ctx.guild.id,)
-        ) as cursor:
-            rows = await cursor.fetchall()
+        entries = await fetch_tag_listing(self.bot.tag_db, ctx.guild.id)
 
-        if not rows:
+        if not entries:
             await ctx.respond("No tags exist in this server yet.")
             return
 
-        content = "\n".join(row[0] for row in rows)
+        content = listlog_text(entries, ctx.guild)
         buffer = io.BytesIO(content.encode("utf-8"))
         file = discord.File(fp=buffer, filename="tags.txt")
 
-        await ctx.respond(f"📑 {len(rows)} tag(s) in {ctx.guild.name}:", file=file)
+        await ctx.respond(f"📑 {len(entries)} tag(s) in {ctx.guild.name}:", file=file)
 
     @tag_group.command(name="usage", description="Check a user's tag storage usage")
     @is_staff()
@@ -464,6 +458,10 @@ class SlashCommands(commands.Cog):
             )
             await self.bot.tag_db.commit()
             await ctx.respond(f"`{name}` Tag Removed ✅")
+            await self._log_action(
+                ctx, "🗑️ Tag Force-Removed", discord.Color.orange(), reason=reason,
+                extra_fields={"Tag": f"`{name}`", "Created by": f"<@{creator_id}>"}
+            )
 
             notify_channel = self.bot.get_channel(TAG_DELETE_NOTIFY_CHANNEL_ID)
             if notify_channel:
@@ -480,6 +478,10 @@ class SlashCommands(commands.Cog):
             )
             await self.bot.tag_db.commit()
             await ctx.respond(f"`{name}` Alias Removed ✅")
+            await self._log_action(
+                ctx, "🗑️ Tag Alias Force-Removed", discord.Color.orange(), reason=reason,
+                extra_fields={"Alias": f"`{name}`"}
+            )
             return
 
         await ctx.respond(f"❌ Tag `{name}` doesn't exist.", ephemeral=True)
@@ -537,6 +539,13 @@ class SlashCommands(commands.Cog):
 
         await self.bot.tag_db.commit()
         await ctx.respond(f"`{name}` Tag Modified ✅")
+        changed = " + ".join(
+            label for label, did in (("text", text is not None), ("attachments", bool(attachments))) if did
+        )
+        await self._log_action(
+            ctx, "✏️ Tag Force-Modified", discord.Color.orange(),
+            extra_fields={"Tag": f"`{name}`", "Created by": f"<@{creator_id}>", "Changed": changed}
+        )
 
     # ---------- moderation ----------
 
@@ -841,6 +850,14 @@ class SlashCommands(commands.Cog):
         else:
             await ctx.respond(f"🐌 Slowmode set to **{seconds}** second(s) for this channel.")
 
+        await self._log_action(
+            ctx, "🐌 Slowmode Changed", discord.Color.light_grey(),
+            extra_fields={
+                "Channel": ctx.channel.mention,
+                "Slowmode": f"{seconds} second(s)" if seconds else "Disabled",
+            }
+        )
+
     @discord.slash_command(name="lock", description="Lock this channel (stop @everyone from sending messages)")
     @is_staff()
     async def lock(self, ctx, reason: Option(str, "Reason", required=False, default=None)):
@@ -914,6 +931,10 @@ class SlashCommands(commands.Cog):
 
         await ctx.respond(f"✅ Gave {role.mention} to {member.mention}.",
                           allowed_mentions=discord.AllowedMentions.none())
+        await self._log_action(
+            ctx, "➕ Role Added", discord.Color.green(), target=member,
+            extra_fields={"Role": f"{role.mention} (`{role.id}`)"}
+        )
 
     @role_group.command(name="remove", description="Take a role away from a member")
     @is_admin()
@@ -940,6 +961,10 @@ class SlashCommands(commands.Cog):
 
         await ctx.respond(f"✅ Removed {role.mention} from {member.mention}.",
                           allowed_mentions=discord.AllowedMentions.none())
+        await self._log_action(
+            ctx, "➖ Role Removed", discord.Color.orange(), target=member,
+            extra_fields={"Role": f"{role.mention} (`{role.id}`)"}
+        )
 
     @role_group.command(name="all", description="Give a role to all members")
     @is_admin()
@@ -981,6 +1006,17 @@ class SlashCommands(commands.Cog):
         except discord.HTTPException:
             await ctx.channel.send(msg, allowed_mentions=discord.AllowedMentions.none())
 
+        await self._log_action(
+            ctx, "🏷️ Role Given To Everyone", discord.Color.gold(),
+            extra_fields={
+                "Role": f"{role.mention} (`{role.id}`)",
+                "Given to": f"{added} member(s)",
+                "Already had it": str(skipped),
+                "Failed": str(failed),
+                "Bots included": "Yes" if include_bots else "No",
+            }
+        )
+
     @role_group.command(name="list", description="Display all roles and their IDs")
     @is_staff()
     async def role_list(self, ctx):
@@ -1011,12 +1047,14 @@ class SlashCommands(commands.Cog):
     @is_admin()
     async def bot_restart(self, ctx):
         await ctx.respond("Attempting to restart the service...", ephemeral=True)
+        await self._log_action(ctx, "🔄 Bot Service Restart", discord.Color.orange())
         await asyncio.create_subprocess_shell("rc-service techifiedbot restart")
 
     @system_group.command(name="update", description="Updates packages on host system.")
     @is_admin()
     async def sys_update(self, ctx):
         await ctx.defer(ephemeral=True)
+        await self._log_action(ctx, "📦 System Update Started", discord.Color.orange())
         try:
             process = await asyncio.create_subprocess_shell(
                 "apk update && apk upgrade",
@@ -1041,6 +1079,7 @@ class SlashCommands(commands.Cog):
     @is_admin()
     async def sys_reboot(self, ctx):
         await ctx.respond("Restarting...", ephemeral=True)
+        await self._log_action(ctx, "⚠️ Host System Reboot", discord.Color.dark_red())
         await asyncio.create_subprocess_shell("reboot")
 
     # ---------- particles ----------
@@ -1058,8 +1097,8 @@ class SlashCommands(commands.Cog):
 
     async def _change_particle(self, guild_id: int, user_id: int, particle: str, delta: int) -> int:
         await self.bot.tag_db.execute(
-            "INSERT INTO particles (guild, user_id, particle, amount) VALUES (?, ?, ?, MAX(?, 0)) "
-            "ON CONFLICT(guild, user_id, particle) DO UPDATE SET amount = MAX(amount + ?, 0)",
+            "INSERT INTO particles (guild, user_id, particle, amount) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(guild, user_id, particle) DO UPDATE SET amount = amount + ?",
             (guild_id, user_id, particle, delta, delta)
         )
         await self.bot.tag_db.commit()
@@ -1082,10 +1121,6 @@ class SlashCommands(commands.Cog):
             f"They now have **{total:,}**.",
             allowed_mentions=discord.AllowedMentions.none()
         )
-        await self._log_action(
-            ctx, "➕ Particles Added", discord.Color.green(), target=target,
-            extra_fields={"Particle": label, "Amount": f"+{number_of_particles:,}", "New total": f"{total:,}"}
-        )
 
     @particles_group.command(name="remove", description="Take particles from a member")
     @is_staff()
@@ -1098,26 +1133,12 @@ class SlashCommands(commands.Cog):
         target = user or ctx.author
         label = PARTICLES.get(particle, particle)
 
-        before = await self._get_particle(ctx.guild.id, target.id, particle)
-        if before == 0:
-            await ctx.respond(
-                f"⚠️ {target.mention} has no {label} to remove.",
-                ephemeral=True, allowed_mentions=discord.AllowedMentions.none()
-            )
-            return
-
         total = await self._change_particle(ctx.guild.id, target.id, particle, -number_of_particles)
-        removed = before - total
-        note = "" if removed == number_of_particles else f" (they only had {before:,}, so it stopped at 0)"
 
         await ctx.respond(
-            f"Removed **{removed:,}** {label} from {target.mention}{note}. "
+            f"Removed **{number_of_particles:,}** {label} from {target.mention}. "
             f"They now have **{total:,}**.",
             allowed_mentions=discord.AllowedMentions.none()
-        )
-        await self._log_action(
-            ctx, "➖ Particles Removed", discord.Color.orange(), target=target,
-            extra_fields={"Particle": label, "Amount": f"-{removed:,}", "New total": f"{total:,}"}
         )
 
     @particles_group.command(name="view", description="See someone's particles")
@@ -1129,7 +1150,7 @@ class SlashCommands(commands.Cog):
         target = user or ctx.author
 
         async with self.bot.tag_db.execute(
-            "SELECT particle, amount FROM particles WHERE guild = ? AND user_id = ? AND amount > 0",
+            "SELECT particle, amount FROM particles WHERE guild = ? AND user_id = ? AND amount != 0",
             (ctx.guild.id, target.id)
         ) as cursor:
             rows = dict(await cursor.fetchall())

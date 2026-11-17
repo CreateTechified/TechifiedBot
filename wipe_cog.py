@@ -21,6 +21,9 @@ WIPE_DELAY = timedelta(hours=WIPE_DELAY_HOURS)
 REMIND_HALF = WIPE_DELAY / 2
 REMIND_FINAL = timedelta(hours=1)
 
+WIPE_DATA_COOLDOWN_HOURS = 6
+WIPE_DATA_COOLDOWN = timedelta(hours=WIPE_DATA_COOLDOWN_HOURS)
+
 ALL_KEY = "all"
 
 # NOT included: tickets, help threads and AFK.
@@ -249,6 +252,39 @@ class Wipe(commands.Cog):
         await cursor.close()
         return run_at if inserted else None
 
+    # ---------- /wipe data cooldown ----------
+
+    async def _cooldown_ends(self, guild_id: int, sector: str):
+        async with self.bot.tag_db.execute(
+            "SELECT last_scheduled_at FROM wipe_cooldowns WHERE guild = ? AND sector = ?",
+            (guild_id, sector)
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return None
+
+        last = discord.utils.parse_time(row[0])
+        if last is None:
+            return None
+
+        ends = last + WIPE_DATA_COOLDOWN
+        return ends if ends > discord.utils.utcnow() else None
+
+    async def _start_cooldown(self, guild_id: int, sector: str):
+        await self.bot.tag_db.execute(
+            "INSERT OR REPLACE INTO wipe_cooldowns (guild, sector, last_scheduled_at) VALUES (?, ?, ?)",
+            (guild_id, sector, discord.utils.utcnow().isoformat())
+        )
+        await self.bot.tag_db.commit()
+
+    @staticmethod
+    def _cooldown_message(sector: str, ends) -> str:
+        return (
+            f"⏳ `/wipe data` for **{SECTORS[sector]}** is on cooldown "
+            f"({WIPE_DATA_COOLDOWN_HOURS} hours between wipes of the same category). "
+            f"You can schedule it again {discord.utils.format_dt(ends, style='R')}."
+        )
+
     # ---------- scheduled wipes: the timer ----------
 
     @tasks.loop(minutes=1)
@@ -341,6 +377,11 @@ class Wipe(commands.Cog):
             )
             return
 
+        ends = await self._cooldown_ends(ctx.guild.id, sector)
+        if ends is not None:
+            await ctx.respond(self._cooldown_message(sector, ends), ephemeral=True)
+            return
+
         phrase = f"WIPE {sector.upper()}"
 
         async def on_confirm(interaction: discord.Interaction):
@@ -354,6 +395,12 @@ class Wipe(commands.Cog):
             return
 
         await interaction.response.defer(ephemeral=True)
+
+        ends = await self._cooldown_ends(interaction.guild_id, sector)
+        if ends is not None:
+            await interaction.followup.send(self._cooldown_message(sector, ends), ephemeral=True)
+            return
+
         try:
             run_at = await self._schedule(interaction.guild_id, sector, interaction.user.id)
         except Exception as e:
@@ -372,6 +419,8 @@ class Wipe(commands.Cog):
                 ephemeral=True
             )
             return
+
+        await self._start_cooldown(interaction.guild_id, sector)
 
         await interaction.followup.send(
             f"⏳ **Wipe scheduled:** {SECTORS[sector]}, to run {fmt_time(run_at)}.\n"

@@ -6,9 +6,11 @@ from datetime import timedelta
 import discord
 from discord.ext import commands
 
+from log_utils import BOT_LOG_CHANNEL_ID, log_bot_event, mark_quiet
+
 # --- CONFIGURATION ---
 HONEYPOT_CHANNEL_ID = 1512206288631627927
-HONEYPOT_LOG_CHANNEL_ID = 1472650884906221771
+HONEYPOT_LOG_CHANNEL_ID = BOT_LOG_CHANNEL_ID
 
 SPAM_WINDOW_SECONDS = 3.0
 SPAM_MESSAGE_THRESHOLD = 3
@@ -52,6 +54,7 @@ class AntiSpam(commands.Cog):
         if member.guild_permissions.manage_messages:
             return
 
+        mark_quiet(message.id)
         try:
             await message.delete()
         except discord.HTTPException:
@@ -120,6 +123,11 @@ class AntiSpam(commands.Cog):
             await member.timeout(until, reason=f"Automated spam detection (warning #{count})")
             await message.channel.send(
                 f"🔇 {member.mention} has been timed out for {duration} second(s) for repeated spam."
+            )
+            await log_bot_event(
+                self.bot, "🔇 Auto-timeout: spam", discord.Color.orange(),
+                f"{member.mention} (`{member.id}`) in {message.channel.mention}",
+                fields={"Duration": f"{duration} second(s)", "Warning": f"#{count}"}
             )
         except (discord.Forbidden, discord.HTTPException):
             pass

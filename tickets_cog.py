@@ -8,10 +8,11 @@ from discord.commands import SlashCommandGroup, Option
 
 from page_embeds import send_paged
 from slash_cog import is_staff, ADMIN_ROLE_ID, MODERATOR_ROLE_ID, STAFF_ROLE_IDS
+from log_utils import BOT_LOG_CHANNEL_ID, log_admin_action
 
 # --- CONFIGURATION ---
 TICKET_CATEGORY_ID = 1556662805518884965
-TICKET_LOG_CHANNEL_ID = 1472650884906221771
+TICKET_LOG_CHANNEL_ID = BOT_LOG_CHANNEL_ID
 
 MAX_OPEN_PER_USER = 2
 INACTIVITY_CLOSE = timedelta(hours=24)
@@ -571,6 +572,15 @@ class Tickets(commands.Cog):
             f"🗑️ This ticket will be **permanently deleted** {discord.utils.format_dt(delete_at, style='R')}. "
             "Run `/ticket canceldelete` (or `/forcereopen`) to stop it."
         )
+        await log_admin_action(
+            self.bot, "🗑️ Ticket Deletion Scheduled", discord.Color.dark_red(), ctx.author,
+            fields={
+                "Ticket": f"#{ticket['id']} ({ctx.channel.mention})",
+                "Opened by": f"<@{ticket['user_id']}>",
+                "Deletes": discord.utils.format_dt(delete_at, style="R"),
+            },
+            channel=ctx.channel
+        )
 
     @ticket_group.command(name="canceldelete", description="Cancel a scheduled ticket deletion")
     @is_staff()
@@ -582,6 +592,10 @@ class Tickets(commands.Cog):
         await self.bot.tag_db.execute("UPDATE tickets SET delete_at = NULL WHERE id = ?", (ticket["id"],))
         await self.bot.tag_db.commit()
         await ctx.respond("✅ Scheduled deletion cancelled. The ticket stays closed and kept for records.")
+        await log_admin_action(
+            self.bot, "🛑 Ticket Deletion Cancelled", discord.Color.green(), ctx.author,
+            fields={"Ticket": f"#{ticket['id']} ({ctx.channel.mention})"}, channel=ctx.channel
+        )
 
     @ticket_group.command(name="autoclose", description="Turn auto-close on or off for this ticket")
     @is_staff()

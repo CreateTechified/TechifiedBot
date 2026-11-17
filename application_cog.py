@@ -7,6 +7,7 @@ from discord.ext import commands
 from discord.commands import SlashCommandGroup, Option
 
 from mc_utils import lookup_profile, whitelist_add, whitelist_names
+from log_utils import ADMIN_LOG_CHANNEL_ID, log_admin_action, log_bot_event
 
 # --- CONFIGURATION ---
 APPLICATION_CHANNEL_ID = 1318925028586291283
@@ -23,7 +24,6 @@ MAX_REASON_LENGTH = 1000
 
 REAPPLY_COOLDOWN = timedelta(hours=24)
 
-ADMIN_LOG_CHANNEL_ID = 1472650884906221771
 
 # For future pine (because i'm a dumbass): IT ONLY WORKS WITH DM APPLICATIONS.
 QUESTIONS = [
@@ -294,6 +294,12 @@ async def submit_application(bot, user, guild_id, server_name, username, reason,
 
     await db.execute("UPDATE applications SET message_id = ? WHERE id = ?", (msg.id, app_id))
     await db.commit()
+
+    await log_bot_event(
+        bot, "🧪 Test application submitted" if test else "📝 Application submitted", discord.Color.gold(),
+        f"{user.mention} (`{user.id}`) applied for **{server_name}**",
+        fields={"Minecraft username": f"`{username}`", "Application": f"#{app_id}", "Review": msg.jump_url}
+    )
     return None, app_id
 
 
@@ -378,6 +384,19 @@ async def finalize_application(interaction: discord.Interaction, view, new_statu
         item.disabled = True
     await interaction.response.edit_message(embed=embed, view=view)
 
+    log_fields = {"Minecraft username": f"`{mc_username}`"}
+    if reason:
+        log_fields["Reason"] = reason
+    await log_bot_event(
+        interaction.client,
+        ("✅ Application accepted" if new_status == "accepted" else "❌ Application denied")
+        + (" (test)" if is_test else ""),
+        color,
+        f"Application #{app_id} from <@{user_id}> for **{server_name}** was reviewed by "
+        f"{interaction.user.mention} (`{interaction.user.id}`)",
+        fields=log_fields
+    )
+
     if new_status == "accepted":
         sent = await send_accept_dm(interaction.client, user_id, app_id, server_name, mc_username)
         if not sent:
@@ -442,10 +461,10 @@ async def complete_whitelist(client, app_id: int, username: str):
         return "done", "⚠️ This application has already been completed."
 
     async with db.execute(
-        "SELECT is_test, guild, server_name FROM applications WHERE id = ?", (app_id,)
+        "SELECT is_test, guild, server_name, user_id FROM applications WHERE id = ?", (app_id,)
     ) as cursor:
         app_row = await cursor.fetchone()
-    is_test, guild_id, server_name = app_row if app_row else (0, None, None)
+    is_test, guild_id, server_name, applicant_id = app_row if app_row else (0, None, None, None)
 
     if is_test:
         ok, code = True, None
@@ -470,6 +489,13 @@ async def complete_whitelist(client, app_id: int, username: str):
         (canonical, discord.utils.utcnow().isoformat(), app_id)
     )
     await db.commit()
+
+    await log_bot_event(
+        client, "🧪 Test whitelist completed" if is_test else "📋 Player whitelisted", discord.Color.green(),
+        f"{f'<@{applicant_id}>' if applicant_id else 'An applicant'} was whitelisted on "
+        f"**{server_name}** as `{canonical}`",
+        fields={"Application": f"#{app_id}"}
+    )
     return "ok", canonical
 
 
@@ -1033,6 +1059,10 @@ class Applications(commands.Cog):
             return
 
         await ctx.respond(f"✅ Application panel posted in {target.mention}.", ephemeral=True)
+        await log_admin_action(
+            self.bot, "📝 Application Panel Posted", discord.Color.blurple(), ctx.author,
+            fields={"Channel": target.mention}, channel=ctx.channel
+        )
 
     @application_group.command(name="toggle", description="Open or close whitelist applications for everyone")
     async def application_toggle(
@@ -1067,6 +1097,10 @@ class Applications(commands.Cog):
             (ctx.guild.id, int(not enabled))
         )
         await self.bot.tag_db.commit()
+        await log_admin_action(
+            self.bot, "⌨️ .apply Enabled" if enabled else "⌨️ .apply Disabled",
+            discord.Color.green() if enabled else discord.Color.red(), ctx.author, channel=ctx.channel
+        )
 
         if enabled:
             await ctx.respond("✅ `.apply` is now **enabled**.", ephemeral=True)

@@ -3,6 +3,8 @@ from discord.ext import commands, tasks
 import re
 from datetime import datetime, timezone, timedelta
 
+from log_utils import BOT_LOG_CHANNEL_ID, log_admin_action, log_bot_event, mark_quiet
+
 class CommunityHelp(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -15,7 +17,7 @@ class CommunityHelp(commands.Cog):
 
         # --- CONFIGURATION ---
         self.HELP_CHANNEL_ID = 1425955723552100362
-        self.STAFF_LOG_CHANNEL_ID = 1472650884906221771
+        self.STAFF_LOG_CHANNEL_ID = BOT_LOG_CHANNEL_ID
         self.cooldowns = commands.CooldownMapping.from_cooldown(1, 60.0, commands.BucketType.user)
 
         # Start the cleanup loop
@@ -165,6 +167,11 @@ class CommunityHelp(commands.Cog):
                 f"Discussion for {message.author.mention}. Use `.close` once resolved "
                 f"(staff can use `/forceclose`)."
             )
+            await log_bot_event(
+                self.bot, "🛠️ Help thread opened", discord.Color.brand_green(),
+                f"{thread.mention} opened by {message.author.mention} (`{message.author.id}`)"
+            )
+            mark_quiet(message.id)
             await message.delete()
         except discord.HTTPException as e:
             print(f"Error: {e}")
@@ -206,6 +213,7 @@ class CommunityHelp(commands.Cog):
         if ctx.valid:
             return
 
+        mark_quiet(message.id)
         try:
             await message.delete()
         except discord.HTTPException:
@@ -219,13 +227,27 @@ class CommunityHelp(commands.Cog):
         except discord.HTTPException:
             pass
 
-    async def _finish_close(self, thread, respond):
+    async def _log_thread_event(self, thread, title, color, actor, forced):
+        if forced and actor is not None:
+            await log_admin_action(
+                self.bot, title, color, actor,
+                fields={"Thread": thread.mention}, channel=thread.parent
+            )
+        else:
+            who = f"{actor.mention} (`{actor.id}`)" if actor is not None else "unknown"
+            await log_bot_event(self.bot, title, color, f"{thread.mention} - by {who}")
+
+    async def _finish_close(self, thread, respond, closed_by=None, forced=False):
         closed_at = discord.utils.utcnow().isoformat()
         await self.bot.tag_db.execute(
             "UPDATE help_threads SET closed = 1, closed_at = ? WHERE thread_id = ?",
             (closed_at, thread.id)
         )
         await self.bot.tag_db.commit()
+        await self._log_thread_event(
+            thread, "🔒 Help thread force-closed" if forced else "✅ Help thread closed",
+            discord.Color.green(), closed_by, forced
+        )
 
         new_name = thread.name.replace("❓", "✅") if "❓" in thread.name else thread.name
         await respond(
@@ -255,7 +277,7 @@ class CommunityHelp(commands.Cog):
             )
             return
 
-        await self._finish_close(thread, ctx.send)
+        await self._finish_close(thread, ctx.send, closed_by=ctx.author)
 
     @discord.slash_command(name="forceclose", description="Force-close any support thread")
     async def forceclose_thread(self, ctx: discord.ApplicationContext):
@@ -273,13 +295,17 @@ class CommunityHelp(commands.Cog):
             return
 
         await ctx.defer()
-        await self._finish_close(thread, ctx.respond)
+        await self._finish_close(thread, ctx.respond, closed_by=ctx.author, forced=True)
 
-    async def _finish_reopen(self, thread, respond):
+    async def _finish_reopen(self, thread, respond, reopened_by=None, forced=False):
         await self.bot.tag_db.execute(
             "UPDATE help_threads SET closed = 0, closed_at = NULL WHERE thread_id = ?", (thread.id,)
         )
         await self.bot.tag_db.commit()
+        await self._log_thread_event(
+            thread, "🔓 Help thread force-reopened" if forced else "🔓 Help thread reopened",
+            discord.Color.blurple(), reopened_by, forced
+        )
 
         new_name = thread.name.replace("✅", "❓") if "✅" in thread.name else thread.name
         try:
@@ -311,7 +337,7 @@ class CommunityHelp(commands.Cog):
             await ctx.send("This thread isn't closed.")
             return
 
-        await self._finish_reopen(thread, ctx.send)
+        await self._finish_reopen(thread, ctx.send, reopened_by=ctx.author)
 
     @discord.slash_command(name="forcereopen", description="Force-reopen a closed support thread or ticket")
     async def forcereopen_thread(self, ctx: discord.ApplicationContext):
@@ -334,7 +360,7 @@ class CommunityHelp(commands.Cog):
             return
 
         await ctx.defer()
-        await self._finish_reopen(thread, ctx.respond)
+        await self._finish_reopen(thread, ctx.respond, reopened_by=ctx.author, forced=True)
 
 # LEAVE THIS NON-ASYNC! IT CRASHES!!!
 def setup(bot):

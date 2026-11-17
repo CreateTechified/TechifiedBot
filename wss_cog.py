@@ -6,6 +6,7 @@ from discord.commands import SlashCommandGroup, Option
 
 from slash_cog import is_admin
 from page_embeds import send_paged
+from log_utils import log_admin_action
 
 MAX_TRIGGER_LENGTH = 100
 MAX_REPLY_LENGTH = 2000
@@ -69,6 +70,10 @@ class AutoReply(commands.Cog):
             f"✅ Whenever a message contains `{trigger}`, I'll reply with:\n> {reply}",
             allowed_mentions=discord.AllowedMentions.none()
         )
+        await log_admin_action(
+            self.bot, "💬 Auto-reply Trigger Set", discord.Color.green(), ctx.author,
+            fields={"Trigger": f"`{trigger}`", "Reply": reply}, channel=ctx.channel
+        )
 
     @wss_group.command(name="remove", description="Remove an auto-reply trigger")
     @is_admin()
@@ -92,6 +97,10 @@ class AutoReply(commands.Cog):
 
         self._cache.pop(ctx.guild.id, None)
         await ctx.respond(f"`{trigger}` Trigger Removed ✅")
+        await log_admin_action(
+            self.bot, "💬 Auto-reply Trigger Removed", discord.Color.red(), ctx.author,
+            fields={"Trigger": f"`{trigger}`"}, channel=ctx.channel
+        )
 
     @wss_group.command(name="list", description="List every auto-reply trigger in the server")
     @is_admin()

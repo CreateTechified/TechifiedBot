@@ -5,6 +5,7 @@ import json
 import os
 
 from page_embeds import send_paged
+from log_utils import BOT_LOG_CHANNEL_ID, log_admin_action
 
 TAG_FILES_DIR = "tag_files"
 VALID_NAME_CHARS = set("0123456789abcdefghijklmnopqrstuvwxyz_-")
@@ -14,10 +15,71 @@ MODERATOR_ROLE_ID = 1421877616272605326
 OWNER_ROLE_ID = 1286650794053210122
 ALLOWED_ROLE_IDS = {ADMIN_ROLE_ID, MODERATOR_ROLE_ID, OWNER_ROLE_ID}
 
-TAG_REPORT_CHANNEL_ID = 1542180741092347954
+TAG_REPORT_CHANNEL_ID = BOT_LOG_CHANNEL_ID
 TAG_DELETE_NOTIFY_CHANNEL_ID = 1436518560964022363
 
 REPORTED_WARNING = "⚠️ **This Tag has been reported for potential rule violations**"
+
+
+# ---------- tag listings (shared by .tag / /tag listall and listlog) ----------
+
+async def fetch_tag_listing(db, guild_id: int):
+    async with db.execute(
+        "SELECT name, content, attachments, creator FROM tags WHERE guild = ? ORDER BY name",
+        (guild_id,)
+    ) as cursor:
+        tag_rows = await cursor.fetchall()
+
+    async with db.execute(
+        "SELECT original_name, name FROM tag_aliases WHERE guild = ? ORDER BY name",
+        (guild_id,)
+    ) as cursor:
+        alias_rows = await cursor.fetchall()
+
+    aliases = {}
+    for original, alias in alias_rows:
+        aliases.setdefault(original, []).append(alias)
+
+    entries = []
+    for name, content, attachments_json, creator in tag_rows:
+        try:
+            attachment_count = len(json.loads(attachments_json)) if attachments_json else 0
+        except (TypeError, ValueError):
+            attachment_count = 0
+        entries.append((name, content, attachment_count, creator, aliases.get(name, [])))
+    return entries
+
+
+def listall_lines(entries):
+    lines = []
+    for name, _, _, creator, aliases in entries:
+        line = f"`{name}` • by <@{creator}>"
+        if aliases:
+            shown = ", ".join(f"`{a}`" for a in aliases)
+            if len(shown) > 500:
+                shown = shown[:499] + "…"
+            line += f" • aliases: {shown}"
+        lines.append(line)
+    return lines
+
+
+def listlog_text(entries, guild) -> str:
+    blocks = []
+    for name, content, attachment_count, creator, aliases in entries:
+        member = guild.get_member(creator) if guild else None
+        creator_text = f"{member.display_name} ({creator})" if member else str(creator)
+
+        lines = [
+            f"tag: {name}",
+            f"creator: {creator_text}",
+            f"aliases: {', '.join(aliases) if aliases else 'none'}",
+            "content:",
+            content if content else "(no text)",
+        ]
+        if attachment_count:
+            lines.append(f"attachments: {attachment_count}")
+        blocks.append("\n".join(lines))
+    return "\n\n---\n\n".join(blocks)
 
 
 class ForceDeleteReasonModal(discord.ui.Modal):
@@ -73,6 +135,12 @@ class ForceDeleteReasonModal(discord.ui.Modal):
             embed.add_field(name="Deletion Reason", value=reason, inline=False)
 
         await interaction.response.edit_message(embed=embed, view=self.parent_view)
+
+        await log_admin_action(
+            interaction.client, "🗑️ Reported Tag Force-Deleted", discord.Color.dark_red(), interaction.user,
+            reason=reason, fields={"Tag": f"`{self.tag_name}`", "Created by": f"<@{creator_id}>"},
+            channel=interaction.channel
+        )
 
         notify_channel = interaction.client.get_channel(TAG_DELETE_NOTIFY_CHANNEL_ID)
         if notify_channel:
@@ -130,6 +198,11 @@ class TagReportView(discord.ui.View):
             embed.title = "✅ Report Cleared"
 
         await interaction.response.edit_message(embed=embed, view=self)
+
+        await log_admin_action(
+            interaction.client, "✅ Tag Report Cleared", discord.Color.green(), interaction.user,
+            fields={"Tag": f"`{self.tag_name}`"}, channel=interaction.channel
+        )
 
 
 class TagSystem(commands.Cog):
@@ -446,37 +519,31 @@ class TagSystem(commands.Cog):
 
     @tag.command(name="listall")
     async def tag_listall(self, ctx):
-        async with self.bot.tag_db.execute(
-            "SELECT name FROM tags WHERE guild = ? ORDER BY name", (ctx.guild.id,)
-        ) as cursor:
-            rows = await cursor.fetchall()
+        entries = await fetch_tag_listing(self.bot.tag_db, ctx.guild.id)
 
-        if not rows:
+        if not entries:
             await ctx.send("No tags exist in this server yet.")
             return
 
         await send_paged(
             ctx, f"📑 All tags in {ctx.guild.name}",
-            [f"`{row[0]}`" for row in rows],
+            listall_lines(entries),
             discord.Color.blurple(), noun="tag(s)"
         )
 
     @tag.command(name="listlog")
     async def tag_log(self, ctx):
-        async with self.bot.tag_db.execute(
-            "SELECT name FROM tags WHERE guild = ? ORDER BY name", (ctx.guild.id,)
-        ) as cursor:
-            rows = await cursor.fetchall()
+        entries = await fetch_tag_listing(self.bot.tag_db, ctx.guild.id)
 
-        if not rows:
+        if not entries:
             await ctx.send("No tags exist in this server yet.")
             return
 
-        content = "\n".join(row[0] for row in rows)
+        content = listlog_text(entries, ctx.guild)
         buffer = io.BytesIO(content.encode("utf-8"))
         file = discord.File(fp=buffer, filename="tags.txt")
 
-        await ctx.send(f"📑 {len(rows)} tag(s) in {ctx.guild.name}:", file=file)
+        await ctx.send(f"📑 {len(entries)} tag(s) in {ctx.guild.name}:", file=file)
 
     @tag.command(name="usage", aliases=["storage"])
     async def tag_usage(self, ctx, member: discord.Member = None):

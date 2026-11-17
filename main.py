@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 
 from tag_cog import TagReportView
 from slash_cog import ADMIN_ROLE_IDS, ADMIN_OVERRIDE_USER_IDS
+from log_utils import log_bot_event
 
 load_dotenv()
 
@@ -56,7 +57,8 @@ class TechifiedBot(commands.Bot):
 bot = TechifiedBot(
     command_prefix=".",
     intents=intents,
-    auto_sync_commands=True
+    auto_sync_commands=True,
+    max_messages=5000,
 )
 
 presence = discord.Game("modpack release soon??")
@@ -65,6 +67,14 @@ presence = discord.Game("modpack release soon??")
 async def on_ready():
     print(f"✅ Logged in as {bot.user} ({bot.user.id})")
     await bot.change_presence(status=discord.Status.online)
+
+    if not getattr(bot, "_startup_logged", False):
+        bot._startup_logged = True
+        await log_bot_event(
+            bot, "🟢 Bot online", discord.Color.green(),
+            f"Logged in as {bot.user} (`{bot.user.id}`)",
+            fields={"Servers": str(len(bot.guilds))}
+        )
 
 @bot.command()
 async def ping(ctx):
@@ -254,6 +264,15 @@ async def setup_database(bot):
     )
 
     await bot.tag_db.execute(
+        """CREATE TABLE IF NOT EXISTS log_settings (
+            guild INTEGER NOT NULL,
+            log_type TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            PRIMARY KEY (guild, log_type)
+        )"""
+    )
+
+    await bot.tag_db.execute(
         """CREATE TABLE IF NOT EXISTS afk_status (
             guild INTEGER NOT NULL,
             user_id INTEGER NOT NULL,
@@ -287,11 +306,25 @@ async def setup_database(bot):
     )
 
     await bot.tag_db.execute(
-        """CREATE TABLE IF NOT EXISTS scheduled_wipes (
-            guild INTEGER PRIMARY KEY,
+        """CREATE TABLE IF NOT EXISTS wipe_jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guild INTEGER NOT NULL,
+            sector TEXT NOT NULL,
             run_at TEXT NOT NULL,
             scheduled_by INTEGER NOT NULL,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            reminded_12 INTEGER NOT NULL DEFAULT 0,
+            reminded_1 INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(guild, sector)
+        )"""
+    )
+
+    await bot.tag_db.execute(
+        """CREATE TABLE IF NOT EXISTS wipe_cooldowns (
+            guild INTEGER NOT NULL,
+            sector TEXT NOT NULL,
+            last_scheduled_at TEXT NOT NULL,
+            PRIMARY KEY (guild, sector)
         )"""
     )
 
@@ -345,6 +378,7 @@ async def main():
         bot.load_extension('application_cog')
         bot.load_extension('tickets_cog')
         bot.load_extension('wipe_cog')
+        bot.load_extension('logging_cog')
 
         await register_tag_command_aliases(bot)
 
