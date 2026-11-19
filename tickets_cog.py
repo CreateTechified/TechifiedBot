@@ -8,7 +8,7 @@ from discord.commands import SlashCommandGroup, Option
 
 from page_embeds import send_paged
 from slash_cog import is_staff, ADMIN_ROLE_ID, MODERATOR_ROLE_ID, STAFF_ROLE_IDS
-from log_utils import BOT_LOG_CHANNEL_ID, log_admin_action
+from log_utils import BOT_LOG_CHANNEL_ID, clip, log_admin_action
 
 # --- CONFIGURATION ---
 TICKET_CATEGORY_ID = 1556662805518884965
@@ -33,6 +33,17 @@ COLS_LIST = ["id", "channel_id", "user_id", "subject", "details", "urgency", "st
 COLS = ", ".join(COLS_LIST)
 
 NO_MENTIONS = discord.AllowedMentions.none()
+
+MAX_NOTE_LENGTH = 1000
+
+URGENCY_CHOICES = [
+    discord.OptionChoice(f"{emoji} {label}", key)
+    for key, (emoji, label, _, _) in URGENCY.items()
+]
+
+
+def quote_block(text: str) -> str:
+    return "\n".join(f"> {line}" if line.strip() else ">" for line in text.splitlines())
 
 
 def is_staff_member(member) -> bool:
@@ -112,9 +123,71 @@ class TicketPanelView(discord.ui.View):
         )
 
 
+class TicketNoteModal(discord.ui.Modal):
+    def __init__(self, ticket_id: int):
+        super().__init__(title=f"Add a note to ticket #{ticket_id}"[:45])
+        self.ticket_id = ticket_id
+        self.note_input = discord.ui.InputText(
+            label="Note", placeholder="What do you want to note down about this ticket?",
+            style=discord.InputTextStyle.paragraph, max_length=MAX_NOTE_LENGTH, required=True,
+        )
+        self.add_item(self.note_input)
+
+    async def callback(self, interaction: discord.Interaction):
+        if not is_staff_member(interaction.user):
+            await interaction.response.send_message("❌ Only staff can add notes.", ephemeral=True)
+            return
+
+        content = self.note_input.value.strip()
+        if not content:
+            await interaction.response.send_message("❌ A note can't be empty.", ephemeral=True)
+            return
+
+        db = interaction.client.tag_db
+        cursor = await db.execute(
+            "INSERT INTO ticket_notes (ticket_id, note_number, author_id, content, created_at) "
+            "VALUES (?, (SELECT COALESCE(MAX(note_number), 0) + 1 FROM ticket_notes WHERE ticket_id = ?), ?, ?, ?)",
+            (self.ticket_id, self.ticket_id, interaction.user.id, content, discord.utils.utcnow().isoformat())
+        )
+        await db.commit()
+        row_id = cursor.lastrowid
+        await cursor.close()
+
+        async with db.execute("SELECT note_number FROM ticket_notes WHERE id = ?", (row_id,)) as cur:
+            number = (await cur.fetchone())[0]
+
+        text = f"📝Note #{number} added by {interaction.user.mention}\n{quote_block(content)}"
+        await interaction.response.send_message(clip(text, 2000), allowed_mentions=NO_MENTIONS)
+
+
 class TicketControlView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
+
+    @discord.ui.button(label="Close Ticket", style=discord.ButtonStyle.danger,
+                       emoji="🔒", custom_id="ticket_close")
+    async def close_ticket(self, button: discord.ui.Button, interaction: discord.Interaction):
+        cog = interaction.client.get_cog("Tickets")
+        ticket = await cog._get(interaction.channel_id) if cog else None
+        if ticket is None:
+            await interaction.response.send_message("❌ I have no record of this ticket.", ephemeral=True)
+            return
+
+        if ticket["status"] == "closed":
+            await interaction.response.send_message("This ticket is already closed.", ephemeral=True)
+            return
+
+        if interaction.user.id != ticket["user_id"] and not is_staff_member(interaction.user):
+            await interaction.response.send_message(
+                "❌ Only the person who opened this ticket or staff can close it.", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer()
+        await cog._finish_close(
+            interaction.channel, ticket, interaction.user.id,
+            interaction.followup.send, cog._closed_text(ticket["id"])
+        )
 
     @discord.ui.button(label="Claim / Unclaim", style=discord.ButtonStyle.primary,
                        emoji="🙋", custom_id="ticket_claim")
@@ -156,6 +229,21 @@ class TicketControlView(discord.ui.View):
         text = (f"🙋 {user.mention} is now handling this ticket." if new_owner
                 else f"↩️ {user.mention} is no longer handling this ticket.")
         await interaction.followup.send(text, allowed_mentions=NO_MENTIONS)
+
+    @discord.ui.button(label="Add Note", style=discord.ButtonStyle.secondary,
+                       emoji="📝", custom_id="ticket_note")
+    async def add_note(self, button: discord.ui.Button, interaction: discord.Interaction):
+        if not is_staff_member(interaction.user):
+            await interaction.response.send_message("❌ Only staff can add notes.", ephemeral=True)
+            return
+
+        cog = interaction.client.get_cog("Tickets")
+        ticket = await cog._get(interaction.channel_id) if cog else None
+        if ticket is None:
+            await interaction.response.send_message("❌ I have no record of this ticket.", ephemeral=True)
+            return
+
+        await interaction.response.send_modal(TicketNoteModal(ticket["id"]))
 
 
 # ---------- the cog ----------
@@ -549,6 +637,23 @@ class Tickets(commands.Cog):
             return
         await ctx.respond(f"✅ Ticket panel posted in {target.mention}.", ephemeral=True)
 
+    @ticket_group.command(name="create", description="Open a new support ticket")
+    async def ticket_create(
+        self, ctx,
+        urgency: Option(str, "How urgent is your issue? (High/Critical ping staff, so only for emergencies)",
+                        choices=URGENCY_CHOICES, required=False, default="low"),
+    ):
+        if ctx.guild is None:
+            await ctx.respond("❌ This command can only be used in a server.", ephemeral=True)
+            return
+
+        block = await self._block(ctx.guild.id, ctx.author.id)
+        if block:
+            await ctx.respond(block, ephemeral=True)
+            return
+
+        await ctx.send_modal(TicketModal(self, urgency))
+
     @ticket_group.command(name="delete", description="Schedule this closed ticket's channel for deletion in 30 minutes")
     @is_staff()
     async def ticket_delete(self, ctx):
@@ -626,6 +731,36 @@ class Tickets(commands.Cog):
             for _, channel_id, subject, urgency, claimed_by in rows
         ]
         await send_paged(ctx, "📦 Open tickets", items, discord.Color.blurple(), noun="ticket(s)")
+
+    @ticket_group.command(name="notes", description="List all the notes added to this ticket")
+    @is_staff()
+    async def ticket_notes(self, ctx):
+        ticket = await self._get(ctx.channel.id)
+        if ticket is None:
+            await ctx.respond("❌ This command can only be used inside a ticket.", ephemeral=True)
+            return
+
+        async with self.bot.tag_db.execute(
+            "SELECT note_number, author_id, content, created_at FROM ticket_notes "
+            "WHERE ticket_id = ? ORDER BY note_number ASC",
+            (ticket["id"],)
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        if not rows:
+            await ctx.respond("📝 There are no notes on this ticket yet.", ephemeral=True)
+            return
+
+        items = []
+        for number, author_id, content, created_at in rows:
+            created = discord.utils.parse_time(created_at)
+            when = discord.utils.format_dt(created, style="R") if created else "some time ago"
+            items.append(f"**Note #{number}** by <@{author_id}> • {when}\n{quote_block(content)}")
+
+        await send_paged(
+            ctx, f"📝 Notes for ticket #{ticket['id']}", items,
+            discord.Color.blurple(), noun="note(s)", per_page=5, ephemeral=True
+        )
 
 
 def setup(bot):

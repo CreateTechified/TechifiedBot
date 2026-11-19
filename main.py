@@ -306,6 +306,18 @@ async def setup_database(bot):
     )
 
     await bot.tag_db.execute(
+        """CREATE TABLE IF NOT EXISTS ticket_notes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticket_id INTEGER NOT NULL,
+            note_number INTEGER NOT NULL,
+            author_id INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(ticket_id, note_number)
+        )"""
+    )
+
+    await bot.tag_db.execute(
         """CREATE TABLE IF NOT EXISTS wipe_jobs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             guild INTEGER NOT NULL,

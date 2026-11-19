@@ -26,7 +26,7 @@ WIPE_DATA_COOLDOWN = timedelta(hours=WIPE_DATA_COOLDOWN_HOURS)
 
 ALL_KEY = "all"
 
-# NOT included: tickets, help threads and AFK.
+# NOT included: help threads and AFK.
 SECTORS = {
     "larp": "Larp stats and restrictions",
     "tags": "Tags, aliases and attachment files",
@@ -34,7 +34,11 @@ SECTORS = {
     "warnings": "Member warnings",
     "applications": "Whitelist application records",
     "servers": "Tracked Minecraft servers (incl. API keys)",
+    "tickets": "Tickets and ticket notes (channels are NOT deleted)",
 }
+
+EXCLUDED_FROM_ALL = {} # nicce to have
+ALL_SECTORS = [key for key in SECTORS if key not in EXCLUDED_FROM_ALL]
 
 SECTOR_CHOICES = [discord.OptionChoice(desc, key) for key, desc in SECTORS.items()]
 TARGET_CHOICES = [discord.OptionChoice("Everything (/wipe all)", ALL_KEY)] + SECTOR_CHOICES
@@ -166,6 +170,15 @@ class Wipe(commands.Cog):
         if sector == "servers":
             servers = await self._delete("mc_servers", guild_id)
             return [f"Servers: {servers} tracked server(s)"]
+        if sector == "tickets":
+            cursor = await self.bot.tag_db.execute(
+                "DELETE FROM ticket_notes WHERE ticket_id IN (SELECT id FROM tickets WHERE guild = ?)",
+                (guild_id,)
+            )
+            notes = cursor.rowcount
+            await cursor.close()
+            tickets = await self._delete("tickets", guild_id)
+            return [f"Tickets: {tickets} ticket(s), {notes} note(s)"]
         return []
 
     async def _post_wipe(self, sector: str, guild_id: int):
@@ -176,6 +189,10 @@ class Wipe(commands.Cog):
             cog = self.bot.get_cog("AutoReply")
             if cog is not None:
                 cog._cache.pop(guild_id, None)
+        elif sector == "tickets":
+            cog = self.bot.get_cog("Tickets")
+            if cog is not None:
+                cog.channels = None
 
     async def run_wipe(self, sectors, guild_id: int, claim_job_id: int = None):
         db = self.bot.tag_db
@@ -315,7 +332,7 @@ class Wipe(commands.Cog):
         await self.bot.wait_until_ready()
 
     async def _execute_job(self, job_id: int, guild_id: int, sector: str, scheduled_by: int):
-        sectors = list(SECTORS) if sector == ALL_KEY else [sector]
+        sectors = ALL_SECTORS if sector == ALL_KEY else [sector]
         lines = await self.run_wipe(sectors, guild_id, claim_job_id=job_id)
         if lines is None:
             return  # cancelled just before it ran
@@ -533,7 +550,8 @@ class Wipe(commands.Cog):
         await interaction.response.send_message(
             f"⚠️ **Final confirmation.** This will schedule a wipe of **everything** for this server, "
             f"to run in **{WIPE_DELAY_HOURS} hours**:\n"
-            + bullet_list(SECTORS.values())
+            + bullet_list(SECTORS[key] for key in ALL_SECTORS)
+            + "\n\n*(Tickets are not included. Use `/wipe data` for those.)*"
             + "\n\nYou'll get reminders with 12 hours and 1 hour left, and can stop it any time "
               "before then with `/wipe cancel`. "
               f"Press the button within {FINAL_CONFIRM_TIMEOUT} seconds, or nothing will be scheduled.",
@@ -570,7 +588,7 @@ class Wipe(commands.Cog):
         await self._log(
             interaction.guild, "⏳ Full wipe scheduled",
             [f"Runs {fmt_time(run_at)}",
-             "Wipes: " + ", ".join(SECTORS),
+             "Wipes: " + ", ".join(ALL_SECTORS),
              "Stop it with `/wipe cancel`"],
             interaction.user.id, color=discord.Color.orange()
         )
