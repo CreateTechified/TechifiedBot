@@ -978,6 +978,15 @@ class SlashCommands(commands.Cog):
             await ctx.respond(problem, ephemeral=True)
             return
 
+        blocked = [p.replace("_", " ") for p in self.AUTO_ROLE_BLOCKED_PERMS if getattr(role.permissions, p)]
+        if blocked:
+            await ctx.respond(
+                "❌ I can't add a role with admin permissions to everyone "
+                f"({', '.join(blocked)}).",
+                ephemeral=True
+            )
+            return
+
         await ctx.defer()
 
         if not ctx.guild.chunked:
@@ -1069,7 +1078,7 @@ class SlashCommands(commands.Cog):
         blocked = [p.replace("_", " ") for p in self.AUTO_ROLE_BLOCKED_PERMS if getattr(role.permissions, p)]
         if blocked:
             await ctx.respond(
-                "❌ I can't hand a role with admin permissions to everyone automatically "
+                "❌ I can't add a role with admin permissions to everyone automatically "
                 f"({', '.join(blocked)}).",
                 ephemeral=True
             )

@@ -66,7 +66,18 @@ presence = discord.Game("modpack release soon??")
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user} ({bot.user.id})")
-    await bot.change_presence(status=discord.Status.online)
+    await bot.ws.send_as_json({
+        "op": 3,
+        "d": {
+            "since": None,
+            "status": "online",
+            "afk": False,
+            "activities": [
+                discord.Game("Totally real version of PROJECT Evolution").to_dict(),
+                discord.CustomActivity("modpack release soon?").to_dict(),
+            ],
+        },
+    })
 
     if not getattr(bot, "_startup_logged", False):
         bot._startup_logged = True
