@@ -341,6 +341,15 @@ async def setup_database(bot):
     )
 
     await bot.tag_db.execute(
+        """CREATE TABLE IF NOT EXISTS auto_roles (
+            guild INTEGER NOT NULL,
+            role_id INTEGER NOT NULL,
+            creator INTEGER NOT NULL,
+            PRIMARY KEY (guild, role_id)
+        )"""
+    )
+
+    await bot.tag_db.execute(
         """CREATE TABLE IF NOT EXISTS particles (
             guild INTEGER NOT NULL,
             user_id INTEGER NOT NULL,

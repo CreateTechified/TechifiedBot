@@ -1037,6 +1037,190 @@ class SlashCommands(commands.Cog):
         file = discord.File(fp=io.BytesIO(content.encode("utf-8")), filename="roles.txt")
         await ctx.respond(f"🏷️ {len(roles)} role(s) in {ctx.guild.name}:", file=file)
 
+    # ---------- auto roles (given to everyone, including future members) ----------
+
+    role_auto_group = role_group.create_subgroup(
+        "auto", "Roles the bot gives to every member, including people who join later"
+    )
+
+    # just so you can't give admin to everyone
+    AUTO_ROLE_BLOCKED_PERMS = (
+        "administrator", "manage_guild", "manage_roles", "manage_channels", "manage_messages",
+        "kick_members", "ban_members", "moderate_members", "manage_webhooks", "mention_everyone",
+    )
+
+    async def _auto_role_ids(self, guild_id: int):
+        async with self.bot.tag_db.execute(
+            "SELECT role_id FROM auto_roles WHERE guild = ?", (guild_id,)
+        ) as cursor:
+            return [row[0] for row in await cursor.fetchall()]
+
+    @role_auto_group.command(name="add", description="Give a role to every member now, and to everyone who joins later")
+    @is_admin()
+    async def role_auto_add(
+            self, ctx,
+            role: Option(discord.Role, "Role to give to everyone"),
+    ):
+        problem = self._role_problem(ctx, role)
+        if problem:
+            await ctx.respond(problem, ephemeral=True)
+            return
+
+        blocked = [p.replace("_", " ") for p in self.AUTO_ROLE_BLOCKED_PERMS if getattr(role.permissions, p)]
+        if blocked:
+            await ctx.respond(
+                "❌ I can't hand a role with admin permissions to everyone automatically "
+                f"({', '.join(blocked)}).",
+                ephemeral=True
+            )
+            return
+
+        if role.id in await self._auto_role_ids(ctx.guild.id):
+            await ctx.respond(f"⚠️ {role.mention} is already an auto role.",
+                              ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+            return
+
+        await self.bot.tag_db.execute(
+            "INSERT OR IGNORE INTO auto_roles (guild, role_id, creator) VALUES (?, ?, ?)",
+            (ctx.guild.id, role.id, ctx.author.id)
+        )
+        await self.bot.tag_db.commit()
+
+        await ctx.defer()
+
+        if not ctx.guild.chunked:
+            await ctx.guild.chunk()
+
+        added = skipped = failed = 0
+        for member in ctx.guild.members:
+            if member.bot:
+                continue
+            if role in member.roles:
+                skipped += 1
+                continue
+            try:
+                await member.add_roles(role, reason=f"Auto role set by {ctx.author} via /role auto add")
+                added += 1
+            except discord.HTTPException:
+                failed += 1
+
+        msg = (
+                f"✅ {role.mention} is now an auto role: everyone who joins from now on gets it. "
+                f"Gave it to **{added}** current member(s), {skipped} already had it"
+                + (f", **{failed}** failed." if failed else ".")
+        )
+        try:
+            await ctx.respond(msg, allowed_mentions=discord.AllowedMentions.none())
+        except discord.HTTPException:
+            await ctx.channel.send(msg, allowed_mentions=discord.AllowedMentions.none())
+
+        await self._log_action(
+            ctx, "🏷️ Auto Role Added", discord.Color.gold(),
+            extra_fields={
+                "Role": f"{role.mention} (`{role.id}`)",
+                "Given to": f"{added} current member(s)",
+                "Already had it": str(skipped),
+                "Failed": str(failed),
+            }
+        )
+
+    @role_auto_group.command(name="remove", description="Stop giving a role to new members (current holders keep it)")
+    @is_admin()
+    async def role_auto_remove(
+            self, ctx,
+            role: Option(discord.Role, "Auto role to stop giving out"),
+    ):
+        cursor = await self.bot.tag_db.execute(
+            "DELETE FROM auto_roles WHERE guild = ? AND role_id = ?", (ctx.guild.id, role.id)
+        )
+        await self.bot.tag_db.commit()
+        removed = cursor.rowcount
+        await cursor.close()
+
+        if not removed:
+            await ctx.respond(f"❌ {role.mention} isn't an auto role.",
+                              ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+            return
+
+        await ctx.respond(
+            f"✅ {role.mention} is no longer given to new members. "
+            "People who already have it keep it (use `/role remove`).",
+            allowed_mentions=discord.AllowedMentions.none()
+        )
+        await self._log_action(
+            ctx, "🏷️ Auto Role Removed", discord.Color.orange(),
+            extra_fields={"Role": f"{role.mention} (`{role.id}`)"}
+        )
+
+    @role_auto_group.command(name="list", description="Show the roles given to every member automatically")
+    @is_staff()
+    async def role_auto_list(self, ctx):
+        role_ids = await self._auto_role_ids(ctx.guild.id)
+        if not role_ids:
+            await ctx.respond("No auto roles are set up in this server yet.")
+            return
+
+        lines = []
+        for role_id in role_ids:
+            role = ctx.guild.get_role(role_id)
+            lines.append(f"{role.mention} — `{role_id}`" if role else f"*deleted role* — `{role_id}`")
+
+        await send_paged(
+            ctx, f"🏷️ Auto roles in {ctx.guild.name}", lines,
+            discord.Color.blurple(), noun="role(s)"
+        )
+
+    @role_auto_group.command(name="listlog", description="Get every auto role and its ID as a downloadable .txt file")
+    @is_staff()
+    async def role_auto_listlog(self, ctx):
+        async with self.bot.tag_db.execute(
+            "SELECT role_id, creator FROM auto_roles WHERE guild = ?", (ctx.guild.id,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        if not rows:
+            await ctx.respond("No auto roles are set up in this server yet.")
+            return
+
+        lines = []
+        for role_id, creator in rows:
+            role = ctx.guild.get_role(role_id)
+            name = role.name if role else "(deleted role)"
+            lines.append(f"{name} — {role_id} — added by {creator}")
+
+        file = discord.File(fp=io.BytesIO("\n".join(lines).encode("utf-8")), filename="auto_roles.txt")
+        await ctx.respond(f"🏷️ {len(rows)} auto role(s) in {ctx.guild.name}:", file=file)
+
+    @commands.Cog.listener()
+    async def on_member_join(self, member):
+        if member.bot:
+            return
+
+        role_ids = await self._auto_role_ids(member.guild.id)
+        if not role_ids:
+            return
+
+        top = member.guild.me.top_role
+        roles = []
+        for role_id in role_ids:
+            role = member.guild.get_role(role_id)
+            if role is not None and not role.managed and role < top:
+                roles.append(role)
+        if not roles:
+            return
+
+        try:
+            await member.add_roles(*roles, reason="Auto role")
+        except discord.HTTPException as e:
+            print(f"Couldn't give auto roles to {member} ({member.id}): {e}")
+
+    @commands.Cog.listener()
+    async def on_guild_role_delete(self, role):
+        await self.bot.tag_db.execute(
+            "DELETE FROM auto_roles WHERE guild = ? AND role_id = ?", (role.guild.id, role.id)
+        )
+        await self.bot.tag_db.commit()
+
     # ---------- system administration ----------
     # Configured for Alpine Linux! May need to be changed for other environments.
     # Is this a bad idea? Probably.
