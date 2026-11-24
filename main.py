@@ -73,8 +73,8 @@ async def on_ready():
             "status": "online",
             "afk": False,
             "activities": [
-                discord.Game("Totally real version of PROJECT Evolution").to_dict(),
                 discord.CustomActivity("modpack release soon?").to_dict(),
+                discord.Game("Totally real version of PROJECT Evolution").to_dict(),
             ],
         },
     })
